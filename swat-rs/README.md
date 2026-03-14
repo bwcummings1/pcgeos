@@ -18,13 +18,16 @@ The canonical agent handoff documents now live at the workspace root:
 
 ## Current status
 
-`Phase 0` and `Phase 1` are complete. `Phase 2` and `Phase 3` have active
-working slices, and the first Phase 4 operator surface now exists.
+`swat-rs v1` is complete.
 
-The current implementation state now spans the first complete vertical slices of
-Phases 2 through 4: live local/Python/agent adapters, semantic trigger/value/
-schema/query/source/resolver layers, and a first live command runtime over the
-shared session/API substrate.
+The workspace now spans the required end-to-end debugger surface for `v1`:
+
+- live mock/local/Python/agent targets
+- semantic control, trigger, snapshot, and replay flows
+- debugger-grade query/value/schema/source/resolver layers
+- shared observation plus capability-gated mutation APIs
+- a live command shell and a live terminal UI
+- shared scripting and cross-language agent-protocol SDK demos
 
 ## Why a separate top-level workspace
 
@@ -73,6 +76,9 @@ shared session/API substrate.
 - `docs/adrs/0020-python-agent-protocol-sdk.md`
 - `docs/adrs/0021-typescript-agent-protocol-sdk.md`
 - `docs/adrs/0022-command-cli-shell.md`
+- `docs/adrs/0023-command-until-and-trigger-actions.md`
+- `docs/adrs/0024-debugger-grade-inspection-models.md`
+- `docs/adrs/0025-terminal-ui-on-shared-debugger-apis.md`
 
 ## Phase 1 status
 
@@ -137,7 +143,9 @@ The first typed value crate is also now in the workspace:
 - `swat-value`
 
 This crate decodes artifact-backed values as UTF-8 text, JSON, or binary data,
-and supports simple JSON-path querying over decoded JSON payloads.
+supports simple JSON-path querying over decoded JSON payloads, and now exposes
+operator-friendly compact previews plus multiline detail rendering for shell and
+future TUI surfaces.
 
 The first schema crate is also now in the workspace:
 
@@ -151,17 +159,19 @@ The first expression/query crate is also now in the workspace:
 
 - `swat-expr`
 
-This crate parses a small semantic query language for event kind, summary text,
-artifact text, and artifact JSON-path predicates. Both `swat-control` and
-`swat-api` now use it.
+This crate parses a semantic query language for event kind, event id, sequence,
+correlation id, boundary id, span id, value key, source file/function, summary
+text, artifact text, and artifact JSON-path predicates, including `not`. Both
+`swat-control` and `swat-api` now use it.
 
 The first source-mapping crate is also now in the workspace:
 
 - `swat-source`
 
 This crate extracts file/line/function locations from structured runtime
-artifacts and resolves them to surrounding source snippets. `swat-api` now
-exposes that lookup path.
+artifacts, resolves them to surrounding source snippets, and now surfaces
+diagnostic failure reports for synthetic or missing source paths. `swat-api`
+now exposes both the snippet lookup path and the richer inspection report.
 
 The first script host is also now in the workspace:
 
@@ -175,16 +185,19 @@ The first API crate is also now in the workspace:
 
 - `swat-api`
 
-This crate exposes read-only trace inspection primitives over sessions, events,
-and decoded artifacts so later human and agent clients can share the same
-inspection substrate.
+This crate exposes trace inspection primitives over sessions, events, decoded
+artifacts, semantic relations, source reports, snapshots, replay plans, and
+capability-gated live mutation so later human and agent clients can share the
+same substrate.
 
 The first resolver crate is also now in the workspace:
 
 - `swat-resolver`
 
-This crate adds the first semantic entity index for correlation ids, boundary
-ids, span ids, tool/model names, planner names, state keys, and source names.
+This crate adds semantic entity indexing for correlation ids, boundary ids,
+span ids, tool/model names, planner names, state keys, and source names, plus
+cross-entity relation edges and correlation-group views for common runtime
+investigation flows.
 
 The first live command runtime is also now in the workspace:
 
@@ -196,14 +209,22 @@ will use. It now also exposes the first live semantic trigger-management path.
 
 ## Phase 4 status
 
-The first operator-surface crate is now in the workspace:
+The operator-surface crates now in the workspace are:
 
 - `swat-command`
+- `swat-ui-tui`
 
 This crate provides a live command grammar for attach/pump/control/query/entity/
 span/source/script operations over the shared substrate.
-It now also supports saving and restoring expression-based trigger sets through
-versioned JSON files, and now ships as a runnable CLI shell.
+It now also supports trigger enable/disable, hit counters and last-hit
+metadata, action-aware trigger persistence, shell-level `until <expr>`, grouped
+help topics, status/session introspection, richer artifact rendering, source
+failure reporting, and a runnable CLI shell.
+
+The TUI crate provides a terminal dashboard over the same debugger substrate,
+with an event list, entity/span context pane, source preview, artifact preview,
+live command entry, and support for mock, local, and agent runtimes. It also
+supports a headless render mode for demos and validation.
 
 ## Demo
 
@@ -227,6 +248,10 @@ Run the live command demo with:
 
 `cargo run -p swat-command --example agent_commands`
 
+Run the trigger-control demo with:
+
+`cargo run -p swat-command --example mock_trigger_controls`
+
 Run the live command shell with:
 
 `cargo run -p swat-command -- mock`
@@ -239,6 +264,22 @@ Run the protocol emitter demo with:
 
 `cargo run -p swat-agent-protocol --example emit_protocol`
 
+Run the Python protocol demo with:
+
+`python3 sdk/python/examples/emit_protocol.py`
+
 Run the TypeScript protocol demo with:
 
 `bun run sdk/typescript/examples/emit_protocol.ts`
+
+Run the TUI in interactive mode with:
+
+`cargo run -p swat-ui-tui -- mock`
+
+Run the TUI headless demos with:
+
+`cargo run -p swat-ui-tui -- --headless --ticks 4 mock`
+
+`cargo run -p swat-ui-tui -- --headless --ticks 6 local python3 -u -c "import time; print('hello from local tui'); time.sleep(0.1)"`
+
+`cargo run -p swat-ui-tui -- --headless --ticks 6 agent python3 -u -c "import json,sys,time; P='__SWATAGENT__'; emit=lambda r:(sys.stdout.write(P+json.dumps(r)+'\\n'), sys.stdout.flush()); emit({'kind':'model','phase':'request','span_id':'model-1','correlation_id':'req-9','name':'gpt-4.1-mini','summary':'model requested'}); emit({'kind':'tool','phase':'start','span_id':'tool-1','correlation_id':'req-9','name':'web_search','summary':'tool started'}); emit({'kind':'tool','phase':'end','span_id':'tool-1','correlation_id':'req-9','name':'web_search','summary':'tool completed'}); time.sleep(0.1)"`

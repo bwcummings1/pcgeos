@@ -19,6 +19,12 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 
     let session = host.execute("session").unwrap();
     assert!(session.summary.contains("session="));
+    assert!(
+        session
+            .lines
+            .iter()
+            .any(|line| line.contains("counts events=1"))
+    );
 
     let resume = host.execute("resume").unwrap();
     assert!(resume.summary.contains("resumed"));
@@ -36,6 +42,13 @@ fn mock_command_host_can_attach_pump_query_and_script() {
         .execute(r#"query kind == ModelBoundary and artifact.json $.tool == "search""#)
         .unwrap();
     assert_eq!(queried.lines.len(), 1);
+
+    let status = host.execute("status").unwrap();
+    assert!(status.lines.iter().any(|line| line.contains("snapshots=0")));
+
+    let help = host.execute("help query").unwrap();
+    assert!(help.summary.contains("help query"));
+    assert!(help.lines.iter().any(|line| line.contains("event.id")));
 
     let scripted = host.execute("script ctx.event_count()").unwrap();
     assert_eq!(scripted.lines.len(), 1);
@@ -65,6 +78,8 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
         .unwrap()
         .to_string();
     assert!(listed.lines[0].contains("pause_search"));
+    assert!(listed.lines[0].contains("actions=PauseTarget"));
+    assert!(listed.lines[0].contains("hits=0"));
 
     host.execute("pump").unwrap();
     let triggered = host.execute("pump").unwrap();
@@ -75,6 +90,9 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
             .iter()
             .any(|line| line.contains("control accepted=true"))
     );
+    let listed = host.execute("triggers").unwrap();
+    assert!(listed.lines[0].contains("hits=1"));
+    assert!(listed.lines[0].contains("last_event="));
 
     let removed = host
         .execute(&format!("trigger-remove {trigger_id}"))
@@ -83,6 +101,45 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
 
     let listed_after = host.execute("triggers").unwrap();
     assert_eq!(listed_after.lines.len(), 0);
+}
+
+#[test]
+fn command_host_can_toggle_trigger_enabled_state() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+    host.execute("resume").unwrap();
+    host.execute(
+        r#"trigger-expr pause_search kind == ModelBoundary and artifact.json $.tool == "search""#,
+    )
+    .unwrap();
+
+    let listed = host.execute("triggers").unwrap();
+    let trigger_id = listed.lines[0]
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("trigger="))
+        .unwrap()
+        .to_string();
+    assert!(listed.lines[0].contains("enabled=true"));
+
+    let disabled = host
+        .execute(&format!("trigger-disable {trigger_id}"))
+        .unwrap();
+    assert!(disabled.summary.contains("disabled trigger"));
+
+    let listed = host.execute("triggers").unwrap();
+    assert!(listed.lines[0].contains("enabled=false"));
+
+    let enabled = host
+        .execute(&format!("trigger-enable {trigger_id}"))
+        .unwrap();
+    assert!(enabled.summary.contains("enabled trigger"));
+
+    let listed = host.execute("triggers").unwrap();
+    assert!(listed.lines[0].contains("enabled=true"));
 }
 
 #[test]
@@ -103,16 +160,24 @@ fn command_host_can_save_and_restore_trigger_sets() {
     );
     host.execute("attach").unwrap();
     host.execute("resume").unwrap();
-    host.execute(
-        r#"trigger-expr-once pause_search kind == ModelBoundary and artifact.json $.tool == "search""#,
-    )
-    .unwrap();
+    host.execute(r#"trigger-snapshot snapshot_search kind == ModelBoundary and artifact.json $.tool == "search" capture search boundary"#)
+        .unwrap();
+    let listed = host.execute("triggers").unwrap();
+    let trigger_id = listed.lines[0]
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("trigger="))
+        .unwrap()
+        .to_string();
+    host.execute(&format!("trigger-disable {trigger_id}"))
+        .unwrap();
 
     let saved = host.execute(&format!("trigger-save {path_str}")).unwrap();
     assert!(saved.summary.contains("saved 1 trigger"));
     let persisted = fs::read_to_string(&path).unwrap();
-    assert!(persisted.contains("pause_search"));
-    assert!(persisted.contains(r#""format_version": 1"#));
+    assert!(persisted.contains("snapshot_search"));
+    assert!(persisted.contains(r#""format_version": 2"#));
+    assert!(persisted.contains(r#""kind": "create_snapshot""#));
+    assert!(persisted.contains(r#""enabled": false"#));
 
     let mut restored = CommandHost::new(
         Box::new(MockAdapter::default()),
@@ -128,12 +193,164 @@ fn command_host_can_save_and_restore_trigger_sets() {
 
     let listed = restored.execute("triggers").unwrap();
     assert_eq!(listed.lines.len(), 1);
-    assert!(listed.lines[0].contains("pause_search"));
+    assert!(listed.lines[0].contains("snapshot_search"));
+    assert!(listed.lines[0].contains("enabled=false"));
+    assert!(listed.lines[0].contains("hits=0"));
+    assert!(listed.lines[0].contains("CreateSnapshot(\"capture search boundary\")"));
     assert!(listed.lines[0].contains("artifact.json $.tool"));
 
+    let trigger_id = listed.lines[0]
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("trigger="))
+        .unwrap()
+        .to_string();
+    restored
+        .execute(&format!("trigger-enable {trigger_id}"))
+        .unwrap();
     restored.execute("pump").unwrap();
     let triggered = restored.execute("pump").unwrap();
     assert!(triggered.lines.iter().any(|line| line.contains("trigger=")));
+    assert!(
+        triggered
+            .lines
+            .iter()
+            .any(|line| line.contains("mock snapshot requested: capture search boundary"))
+    );
+    let listed = restored.execute("triggers").unwrap();
+    assert!(listed.lines[0].contains("hits=1"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_host_can_run_until_expression() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+
+    let until = host
+        .execute(r#"until kind == ModelBoundary and artifact.json $.tool == "search""#)
+        .unwrap();
+    assert!(until.summary.contains("until matched"));
+    assert!(
+        until
+            .lines
+            .iter()
+            .any(|line| line.contains("mock target resumed"))
+    );
+    assert!(until.lines.iter().any(|line| line.contains("TriggerHit")));
+    assert!(
+        until
+            .lines
+            .iter()
+            .any(|line| line.contains("control accepted=true"))
+    );
+
+    let listed = host.execute("triggers").unwrap();
+    assert!(listed.lines.is_empty());
+}
+
+#[test]
+fn command_host_can_list_show_and_replay_snapshots() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+    host.execute("resume").unwrap();
+    host.execute("pump").unwrap();
+    host.execute("pump").unwrap();
+
+    let snapshot = host.execute("snapshot shell checkpoint").unwrap();
+    assert!(snapshot.summary.contains("created snapshot"));
+    let snapshot_id = snapshot
+        .lines
+        .iter()
+        .find_map(|line| {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix("snapshot="))
+                .map(ToString::to_string)
+        })
+        .unwrap();
+
+    let listed = host.execute("snapshots").unwrap();
+    assert_eq!(listed.lines.len(), 1);
+    assert!(listed.lines[0].contains(&format!("snapshot={snapshot_id}")));
+    assert!(listed.lines[0].contains("replay=1"));
+
+    let shown = host
+        .execute(&format!("snapshot-show {snapshot_id}"))
+        .unwrap();
+    assert!(shown.summary.contains("snapshot"));
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line.contains("reason=\"shell checkpoint\""))
+    );
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line.contains("replay_directives=1"))
+    );
+
+    let replay = host.execute(&format!("replay {snapshot_id}")).unwrap();
+    assert!(replay.summary.contains("applied 1 replay directive"));
+    assert!(replay.lines.iter().any(|line| line.contains("boundary=42")));
+    assert!(
+        replay
+            .lines
+            .iter()
+            .any(|line| line.contains("prepared replay for boundary"))
+    );
+}
+
+#[test]
+fn command_host_can_load_legacy_v1_trigger_files() {
+    let path = std::env::temp_dir().join(format!(
+        "swat-trigger-v1-{}-{}.json",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        r#"{
+  "format_version": 1,
+  "triggers": [
+    {
+      "name": "pause_search",
+      "expr": "kind == ModelBoundary and artifact.json $.tool == \"search\"",
+      "fire_once": true
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+    host.execute("attach").unwrap();
+    host.execute("resume").unwrap();
+
+    let loaded = host
+        .execute(&format!("trigger-load {}", path.display()))
+        .unwrap();
+    assert!(loaded.summary.contains("loaded 1 trigger"));
+
+    let listed = host.execute("triggers").unwrap();
+    assert!(listed.lines[0].contains("pause_search"));
+    assert!(listed.lines[0].contains("enabled=true"));
+    assert!(listed.lines[0].contains("actions=PauseTarget"));
 
     let _ = fs::remove_file(path);
 }
@@ -182,7 +399,9 @@ time.sleep(0.1)
     assert!(entities.lines[0].contains("web_search"));
 
     let correlated = host.execute("correlation req-7").unwrap();
-    assert_eq!(correlated.lines.len(), 4);
+    assert_eq!(correlated.lines.len(), 7);
+    assert!(correlated.lines.iter().any(|line| line.contains("span_ids=model-1,tool-1")));
+    assert!(correlated.lines.iter().any(|line| line.contains("entity_count=")));
 
     let spans = host.execute("spans").unwrap();
     assert_eq!(spans.lines.len(), 2);
@@ -206,5 +425,37 @@ time.sleep(0.1)
         .to_string();
     let artifacts = host.execute(&format!("artifacts {event_id}")).unwrap();
     assert_eq!(artifacts.lines.len(), 1);
+    assert!(artifacts.lines[0].contains("bytes="));
+    assert!(artifacts.lines[0].contains("lines="));
     assert!(artifacts.lines[0].contains("gpt-4.1-mini"));
+
+    let artifact_detail = host.execute(&format!("artifact-show {event_id}")).unwrap();
+    assert!(artifact_detail.summary.contains("artifact 0"));
+    assert!(
+        artifact_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("detail") && line.contains("gpt-4.1-mini"))
+    );
+
+    let source_event_id = host
+        .execute("events Execution")
+        .unwrap()
+        .lines
+        .into_iter()
+        .find(|line| line.contains("planner started"))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|part| part.strip_prefix("event="))
+                .map(ToString::to_string)
+        })
+        .unwrap();
+    let source = host.execute(&format!("source {source_event_id}")).unwrap();
+    assert!(source.summary.contains("source unresolved"));
+    assert!(
+        source
+            .lines
+            .iter()
+            .any(|line| line.contains("failure_kind=MissingFile"))
+    );
 }

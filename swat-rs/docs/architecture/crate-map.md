@@ -1,4 +1,4 @@
-# Planned Crate Map
+# Crate Map
 
 ## Phase 1 substrate
 
@@ -89,7 +89,9 @@
   implemented.
 
 - `swat-ui-tui`
-  Terminal frontend.
+  Terminal frontend. The first live TUI is now implemented with event, entity,
+  source, artifact, and command-entry panes over the shared debugger substrate,
+  plus a headless render mode for demos and tests.
 
 ## Later adapters
 

@@ -49,5 +49,7 @@ Useful demos:
 - `cargo run -p swat-session --example python_trace`
 - `cargo run -p swat-session --example agent_trace`
 - `cargo run -p swat-command -- mock`
+- `cargo run -p swat-ui-tui -- --headless --ticks 4 mock`
 - `cargo run -p swat-agent-protocol --example emit_protocol`
+- `python3 sdk/python/examples/emit_protocol.py`
 - `bun run sdk/typescript/examples/emit_protocol.ts`

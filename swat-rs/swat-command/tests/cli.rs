@@ -28,13 +28,15 @@ fn run_cli(args: &[&str], script: &str) -> String {
 fn mock_cli_can_attach_pump_and_query() {
     let stdout = run_cli(
         &["mock"],
-        "attach\nresume\npump\npump\nquery kind == ModelBoundary and artifact.json $.tool == \"search\"\nexit\n",
+        "attach\nstatus\nresume\npump\npump\nquery kind == ModelBoundary and artifact.json $.tool == \"search\"\nhelp query\nexit\n",
     );
 
     assert!(stdout.contains("attached session="));
+    assert!(stdout.contains("counts events="));
     assert!(stdout.contains("mock target resumed"));
     assert!(stdout.contains("ModelBoundary"));
     assert!(stdout.contains("matched query"));
+    assert!(stdout.contains("fields: kind, event.id, sequence"));
 }
 
 #[test]
@@ -91,4 +93,31 @@ fn mock_cli_can_preload_trigger_file() {
     assert!(stdout.contains("TriggerHit"));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn mock_cli_can_run_until_expression() {
+    let stdout = run_cli(
+        &["mock"],
+        "attach\nuntil kind == ModelBoundary and artifact.json $.tool == \"search\"\nexit\n",
+    );
+
+    assert!(stdout.contains("until matched"));
+    assert!(stdout.contains("mock target resumed"));
+    assert!(stdout.contains("TriggerHit"));
+}
+
+#[test]
+fn mock_cli_can_list_and_show_snapshots() {
+    let stdout = run_cli(
+        &["mock"],
+        "attach\nresume\npump\npump\nhelp artifacts\nsnapshot cli checkpoint\nsnapshots\nevents Snapshot\nexit\n",
+    );
+
+    assert!(stdout.contains("created snapshot"));
+    assert!(stdout.contains("1 snapshot(s)"));
+    assert!(stdout.contains("snapshot="));
+    assert!(stdout.contains("cli checkpoint"));
+    assert!(stdout.contains("Snapshot"));
+    assert!(stdout.contains("artifact-show <event_id>"));
 }

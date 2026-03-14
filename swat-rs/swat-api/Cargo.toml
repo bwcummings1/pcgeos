@@ -6,13 +6,16 @@ license.workspace = true
 
 [dependencies]
 swat-core = { path = "../swat-core" }
+swat-control = { path = "../swat-control" }
 swat-expr = { path = "../swat-expr" }
+swat-replay = { path = "../swat-replay" }
 swat-resolver = { path = "../swat-resolver" }
+swat-session = { path = "../swat-session" }
 swat-source = { path = "../swat-source" }
 swat-store = { path = "../swat-store" }
 swat-value = { path = "../swat-value" }
 
 [dev-dependencies]
 swat-adapter-agent = { path = "../swat-adapter-agent" }
+swat-adapter-local = { path = "../swat-adapter-local" }
 swat-adapter-mock = { path = "../swat-adapter-mock" }
-swat-session = { path = "../swat-session" }

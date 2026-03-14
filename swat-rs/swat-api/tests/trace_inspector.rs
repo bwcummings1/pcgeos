@@ -2,9 +2,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
+use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_api::TraceInspector;
-use swat_core::{ControlAction, EventKind};
+use swat_api::{LiveSessionApi, TraceInspector};
+use swat_control::{Trigger, TriggerEngine, TriggerPredicate};
+use swat_core::{ControlAction, EventKind, EventPayload, PolicyVerdict, TriggerId};
 use swat_expr::parse_expression;
 use swat_session::SessionManager;
 use swat_store::InMemoryStore;
@@ -22,6 +24,17 @@ fn trace_inspector_can_find_boundary_events_and_artifact_text() {
         .unwrap();
     manager.pump(session_id, &mut adapter, &mut store).unwrap();
     manager.pump(session_id, &mut adapter, &mut store).unwrap();
+    let snapshot = manager
+        .control(
+            session_id,
+            &mut adapter,
+            ControlAction::CreateSnapshot {
+                reason: "api snapshot".to_string(),
+            },
+            &mut store,
+        )
+        .unwrap();
+    let snapshot_id = snapshot.snapshot.unwrap().snapshot_id;
 
     let inspector = TraceInspector::new(&store);
     let boundary_events = inspector.events_by_kind(session_id, EventKind::ModelBoundary);
@@ -29,6 +42,12 @@ fn trace_inspector_can_find_boundary_events_and_artifact_text() {
 
     let decoded = inspector.decoded_artifacts(&boundary_events[0]).unwrap();
     assert_eq!(decoded.len(), 1);
+    let presentations = inspector
+        .artifact_presentations(&boundary_events[0], 24)
+        .unwrap();
+    assert_eq!(presentations.len(), 1);
+    assert!(presentations[0].detail.contains('\n'));
+    assert!(presentations[0].preview.len() <= 27);
 
     let summary_matches = inspector.search_summaries(session_id, "observed");
     assert!(!summary_matches.is_empty());
@@ -48,6 +67,30 @@ fn trace_inspector_can_find_boundary_events_and_artifact_text() {
         .query_events_str(session_id, r#"summary contains "attached""#)
         .unwrap();
     assert_eq!(queried_str.len(), 1);
+    let source = inspector
+        .source_inspection(&boundary_events[0], 1, 1)
+        .unwrap();
+    assert!(source.location.is_none());
+    assert!(source.failure.is_none());
+
+    let snapshots = inspector.session_snapshots(session_id);
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].snapshot_id, snapshot_id);
+    let inspection = inspector.snapshot_inspection(snapshot_id).unwrap();
+    assert_eq!(inspection.snapshot.reason, "api snapshot");
+    assert!(inspection.captured_event_count >= 5);
+    assert_eq!(inspection.replay_directive_count, 1);
+    assert!(
+        inspector
+            .replay_plan_for_snapshot(snapshot_id)
+            .unwrap()
+            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
+    );
+    assert!(
+        inspector
+            .replay_plan_for_boundary(session_id, swat_adapter_mock::MOCK_BOUNDARY_ID)
+            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
+    );
 }
 
 #[test]
@@ -64,9 +107,11 @@ def emit(record):
     sys.stdout.flush()
 
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested"})
+emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
 emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started"})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed"})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded"})
+emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
 "#;
     let mut adapter =
@@ -95,9 +140,48 @@ time.sleep(0.1)
     let entities = inspector.find_entities(session_id, "web").unwrap();
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].entity.name, "web_search");
+    let relations = inspector.entity_relations(session_id).unwrap();
+    assert!(relations.iter().any(|relation| {
+        let names = [
+            (&relation.left.kind, relation.left.name.as_str()),
+            (&relation.right.kind, relation.right.name.as_str()),
+        ];
+        names.contains(&(&swat_resolver::ResolvedEntityKind::CorrelationId, "req-7"))
+            && names.contains(&(&swat_resolver::ResolvedEntityKind::ToolName, "web_search"))
+    }));
+    let groups = inspector.correlation_groups(session_id).unwrap();
+    assert!(groups.iter().any(|group| {
+        group.correlation_id == "req-7"
+            && group.span_ids.iter().any(|span| span == "model-1")
+            && group
+                .entities
+                .iter()
+                .any(|entity| entity.name == "gpt-4.1-mini")
+    }));
 
     let correlated = inspector.events_for_correlation(session_id, "req-7");
     assert_eq!(correlated.len(), 4);
+    assert_eq!(
+        inspector
+            .events_for_span(session_id, "model-1")
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        inspector
+            .events_for_source_file(session_id, "/tmp/agent.py")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        inspector
+            .events_for_value_key(session_id, "agent.state")
+            .unwrap()
+            .len(),
+        1
+    );
 
     let boundary_id = correlated
         .iter()
@@ -111,4 +195,99 @@ time.sleep(0.1)
         })
         .unwrap();
     assert_eq!(inspector.boundary_span(session_id, boundary_id).len(), 2);
+}
+
+#[test]
+fn live_session_api_audits_trigger_mutations() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    let added = {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.add_trigger(
+            session_id,
+            Trigger::new(
+                "pause_search",
+                TriggerPredicate::SummaryContains("search".to_string()),
+                vec![],
+            ),
+        )
+        .unwrap()
+    };
+    assert_eq!(added.policy_events.len(), 1);
+    assert!(matches!(
+        added.policy_events[0].payload,
+        EventPayload::Policy {
+            verdict: PolicyVerdict::Allow,
+            ..
+        }
+    ));
+
+    let removed = {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.remove_trigger(session_id, added.value).unwrap()
+    };
+    assert_eq!(removed.policy_events.len(), 1);
+    assert!(matches!(
+        removed.policy_events[0].payload,
+        EventPayload::Policy {
+            verdict: PolicyVerdict::Allow,
+            ..
+        }
+    ));
+
+    let err = {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.set_trigger_enabled(session_id, TriggerId::from_raw(999_999), false)
+            .unwrap_err()
+    };
+    assert!(err.to_string().contains("unknown trigger"));
+    assert!(store.events_for_session(session_id).iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::Policy {
+                verdict: PolicyVerdict::Deny,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn live_session_api_denies_capability_blocked_snapshot_requests() {
+    let spec =
+        LocalProcessAdapter::new(LocalProcessSpec::new("/bin/sh").with_args(["-c", "sleep 0.2"]));
+    let mut adapter = spec;
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    let err = {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.control(
+            session_id,
+            ControlAction::CreateSnapshot {
+                reason: "denied".to_string(),
+            },
+        )
+        .unwrap_err()
+    };
+    assert!(err.to_string().contains("policy denied control"));
+    assert!(store.events_for_session(session_id).iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::Policy {
+                verdict: PolicyVerdict::Deny,
+                ..
+            }
+        )
+    }));
 }

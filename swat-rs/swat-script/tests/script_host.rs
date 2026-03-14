@@ -4,7 +4,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use swat_adapter_mock::MockAdapter;
 use swat_adapter_python::{PythonAdapter, PythonAdapterSpec};
 use swat_core::ControlAction;
-use swat_script::ScriptHost;
+use swat_control::TriggerEngine;
+use swat_script::{LiveScriptSession, ScriptHost};
 use swat_session::SessionManager;
 use swat_store::InMemoryStore;
 
@@ -95,4 +96,49 @@ helper(2)
     );
 
     fs::remove_file(script_path).unwrap();
+}
+
+#[test]
+fn live_script_session_uses_public_mutation_api() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut triggers = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    let mut live = LiveScriptSession::new(
+        session_id,
+        &mut manager,
+        &mut adapter,
+        &mut store,
+        &mut triggers,
+    );
+    assert_eq!(live.event_count(), 1);
+    assert_eq!(live.trigger_count(), 0);
+    assert!(live.resume().unwrap().contains("resumed"));
+
+    let trigger_id = live
+        .add_trigger_expr(
+            "pause_search",
+            r#"kind == ModelBoundary and artifact.json $.tool == "search""#,
+            true,
+        )
+        .unwrap();
+    assert_eq!(live.trigger_count(), 1);
+    assert_eq!(live.disable_trigger(trigger_id).unwrap(), true);
+    assert_eq!(live.enable_trigger(trigger_id).unwrap(), false);
+
+    live.pump_once().unwrap();
+    live.pump_once().unwrap();
+    let snapshot_id = live.snapshot("script checkpoint").unwrap();
+    assert!(snapshot_id.raw() > 0);
+    assert_eq!(
+        live.query_count(r#"kind == ModelBoundary and artifact.json $.tool == "search""#)
+            .unwrap(),
+        1
+    );
+    assert_eq!(live.remove_trigger(trigger_id).unwrap(), "pause_search");
+    assert_eq!(live.trigger_count(), 0);
 }

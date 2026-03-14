@@ -1,16 +1,39 @@
 #![forbid(unsafe_code)]
 
-use swat_core::{BoundaryId, EventEnvelope, EventId, EventKind, SessionId, SwatResult};
+use swat_control::{Trigger, TriggerEngine};
+use swat_core::{
+    BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, PendingEvent,
+    PolicyVerdict, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult, TargetAdapter,
+    TriggerId,
+};
 use swat_expr::{QueryExpr, evaluate_expression, parse_expression};
-use swat_resolver::{EntityRef, ResolvedEntity, TraceIndex, TraceResolver};
-use swat_source::{SourceSnippet, resolve_event_source};
+use swat_replay::ReplayPlan;
+use swat_resolver::{
+    CorrelationGroup, EntityRef, EntityRelation, ResolvedEntity, TraceIndex, TraceResolver,
+};
+use swat_session::{ControlReport, ReplayApplyReport, SessionManager};
+use swat_source::{SourceInspection, SourceSnippet, inspect_event_source, resolve_event_source};
 use swat_store::SwatStore;
-use swat_value::{DecodedValue, decode_event_artifacts};
+use swat_value::{DecodedValue, ValuePresentation, decode_event_artifacts};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceMatch {
     pub event: EventEnvelope,
     pub matched_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotInspection {
+    pub snapshot: SnapshotRecord,
+    pub snapshot_event: Option<EventEnvelope>,
+    pub captured_event_count: usize,
+    pub replay_directive_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MutationReport<T> {
+    pub value: T,
+    pub policy_events: Vec<EventEnvelope>,
 }
 
 pub struct TraceInspector<'a, S: SwatStore + ?Sized> {
@@ -42,6 +65,18 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
 
     pub fn decoded_artifacts(&self, event: &EventEnvelope) -> SwatResult<Vec<DecodedValue>> {
         decode_event_artifacts(self.store, event)
+    }
+
+    pub fn artifact_presentations(
+        &self,
+        event: &EventEnvelope,
+        preview_limit: usize,
+    ) -> SwatResult<Vec<ValuePresentation>> {
+        Ok(self
+            .decoded_artifacts(event)?
+            .into_iter()
+            .map(|value| value.presentation(preview_limit))
+            .collect())
     }
 
     pub fn search_summaries(&self, session_id: SessionId, needle: &str) -> Vec<TraceMatch> {
@@ -105,6 +140,15 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         resolve_event_source(self.store, event, before, after)
     }
 
+    pub fn source_inspection(
+        &self,
+        event: &EventEnvelope,
+        before: usize,
+        after: usize,
+    ) -> SwatResult<SourceInspection> {
+        inspect_event_source(self.store, event, before, after)
+    }
+
     pub fn resolve_event_entities(&self, event: &EventEnvelope) -> SwatResult<Vec<EntityRef>> {
         TraceResolver::new(self.store).event_entities(event)
     }
@@ -135,6 +179,308 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         boundary_id: BoundaryId,
     ) -> Vec<EventEnvelope> {
         TraceResolver::new(self.store).boundary_span(session_id, boundary_id)
+    }
+
+    pub fn entity_relations(&self, session_id: SessionId) -> SwatResult<Vec<EntityRelation>> {
+        TraceResolver::new(self.store).entity_relations(session_id)
+    }
+
+    pub fn related_entities(
+        &self,
+        session_id: SessionId,
+        entity: &EntityRef,
+    ) -> SwatResult<Vec<EntityRelation>> {
+        TraceResolver::new(self.store).related_entities(session_id, entity)
+    }
+
+    pub fn correlation_groups(&self, session_id: SessionId) -> SwatResult<Vec<CorrelationGroup>> {
+        TraceResolver::new(self.store).correlation_groups(session_id)
+    }
+
+    pub fn events_for_span(
+        &self,
+        session_id: SessionId,
+        span_id: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_span(session_id, span_id)
+    }
+
+    pub fn events_for_value_key(
+        &self,
+        session_id: SessionId,
+        value_key: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_value_key(session_id, value_key)
+    }
+
+    pub fn events_for_source_file(
+        &self,
+        session_id: SessionId,
+        file: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_source_file(session_id, file)
+    }
+
+    pub fn session_snapshots(&self, session_id: SessionId) -> Vec<SnapshotRecord> {
+        self.store.snapshots_for_session(session_id)
+    }
+
+    pub fn snapshot_by_id(&self, snapshot_id: SnapshotId) -> Option<SnapshotRecord> {
+        self.store.snapshot(snapshot_id)
+    }
+
+    pub fn snapshot_inspection(&self, snapshot_id: SnapshotId) -> Option<SnapshotInspection> {
+        let snapshot = self.snapshot_by_id(snapshot_id)?;
+        let events = self.session_events(snapshot.session_id);
+        let snapshot_event = events
+            .iter()
+            .find(|event| event.event_id == snapshot.snapshot_event_id)
+            .cloned();
+        let captured_event_count = events
+            .iter()
+            .filter(|event| event.sequence_no <= snapshot.captured_sequence_no)
+            .count();
+        let replay_plan = ReplayPlan::from_events_up_to(&events, snapshot.captured_sequence_no);
+
+        Some(SnapshotInspection {
+            snapshot,
+            snapshot_event,
+            captured_event_count,
+            replay_directive_count: replay_plan.len(),
+        })
+    }
+
+    pub fn replay_plan_for_snapshot(&self, snapshot_id: SnapshotId) -> Option<ReplayPlan> {
+        let snapshot = self.snapshot_by_id(snapshot_id)?;
+        Some(ReplayPlan::from_events_up_to(
+            &self.session_events(snapshot.session_id),
+            snapshot.captured_sequence_no,
+        ))
+    }
+
+    pub fn replay_plan_for_boundary(
+        &self,
+        session_id: SessionId,
+        boundary_id: BoundaryId,
+    ) -> ReplayPlan {
+        ReplayPlan::for_boundary(&self.session_events(session_id), boundary_id)
+    }
+}
+
+pub struct LiveSessionApi<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> {
+    manager: &'a mut SessionManager,
+    adapter: &'a mut A,
+    store: &'a mut S,
+    trigger_engine: &'a mut TriggerEngine,
+}
+
+impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A, S> {
+    pub fn new(
+        manager: &'a mut SessionManager,
+        adapter: &'a mut A,
+        store: &'a mut S,
+        trigger_engine: &'a mut TriggerEngine,
+    ) -> Self {
+        Self {
+            manager,
+            adapter,
+            store,
+            trigger_engine,
+        }
+    }
+
+    pub fn inspector(&self) -> TraceInspector<'_, S> {
+        TraceInspector::new(self.store)
+    }
+
+    pub fn triggers(&self) -> &[Trigger] {
+        self.trigger_engine.triggers()
+    }
+
+    pub fn control(
+        &mut self,
+        session_id: SessionId,
+        action: ControlAction,
+    ) -> SwatResult<MutationReport<ControlReport>> {
+        let session = self
+            .manager
+            .session(session_id)
+            .ok_or_else(|| SwatError::new(format!("unknown session {}", session_id.raw())))?;
+        if !control_allowed(session.capabilities, &action) {
+            let summary = format!(
+                "policy denied control {:?} for target {}",
+                action,
+                session.target_id.raw()
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(summary));
+        }
+
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed control {:?} for target {}",
+                action,
+                session.target_id.raw()
+            ),
+        )?;
+        let value = self
+            .manager
+            .control(session_id, self.adapter, action, self.store)?;
+        Ok(MutationReport {
+            value,
+            policy_events,
+        })
+    }
+
+    pub fn apply_replay_plan(
+        &mut self,
+        session_id: SessionId,
+        plan: &ReplayPlan,
+    ) -> SwatResult<MutationReport<ReplayApplyReport>> {
+        let session = self
+            .manager
+            .session(session_id)
+            .ok_or_else(|| SwatError::new(format!("unknown session {}", session_id.raw())))?;
+        if !session.capabilities.can_inject_replay {
+            let summary = format!(
+                "policy denied replay injection for target {}",
+                session.target_id.raw()
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(summary));
+        }
+
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed replay injection for target {} with {} directive(s)",
+                session.target_id.raw(),
+                plan.len()
+            ),
+        )?;
+        let value = self
+            .manager
+            .apply_replay_plan(session_id, self.adapter, self.store, plan)?;
+        Ok(MutationReport {
+            value,
+            policy_events,
+        })
+    }
+
+    pub fn add_trigger(
+        &mut self,
+        session_id: SessionId,
+        trigger: Trigger,
+    ) -> SwatResult<MutationReport<TriggerId>> {
+        let trigger_id = trigger.trigger_id;
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed trigger add {} ({})",
+                trigger_id.raw(),
+                trigger.name
+            ),
+        )?;
+        self.trigger_engine.add_trigger(trigger);
+        Ok(MutationReport {
+            value: trigger_id,
+            policy_events,
+        })
+    }
+
+    pub fn remove_trigger(
+        &mut self,
+        session_id: SessionId,
+        trigger_id: TriggerId,
+    ) -> SwatResult<MutationReport<Trigger>> {
+        let Some(trigger) = self.trigger_engine.remove_trigger(trigger_id) else {
+            let summary = format!(
+                "policy denied trigger removal for unknown {}",
+                trigger_id.raw()
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(format!(
+                "unknown trigger {}",
+                trigger_id.raw()
+            )));
+        };
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed trigger removal {} ({})",
+                trigger_id.raw(),
+                trigger.name
+            ),
+        )?;
+        Ok(MutationReport {
+            value: trigger,
+            policy_events,
+        })
+    }
+
+    pub fn set_trigger_enabled(
+        &mut self,
+        session_id: SessionId,
+        trigger_id: TriggerId,
+        enabled: bool,
+    ) -> SwatResult<MutationReport<bool>> {
+        let Some(previous) = self.trigger_engine.set_enabled(trigger_id, enabled) else {
+            let summary = format!(
+                "policy denied trigger state change for unknown {}",
+                trigger_id.raw()
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(format!(
+                "unknown trigger {}",
+                trigger_id.raw()
+            )));
+        };
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed trigger {} to be {}",
+                trigger_id.raw(),
+                if enabled { "enabled" } else { "disabled" }
+            ),
+        )?;
+        Ok(MutationReport {
+            value: previous,
+            policy_events,
+        })
+    }
+
+    fn record_policy_event(
+        &mut self,
+        session_id: SessionId,
+        verdict: PolicyVerdict,
+        summary: String,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.manager.record_emission(
+            session_id,
+            self.store,
+            swat_core::AdapterEmission {
+                pending_events: vec![PendingEvent::new(
+                    EventKind::PolicyDecision,
+                    EventPayload::Policy { verdict, summary },
+                )],
+                pending_artifacts: Vec::new(),
+            },
+        )
+    }
+}
+
+fn control_allowed(capabilities: swat_core::CapabilitySet, action: &ControlAction) -> bool {
+    match action {
+        ControlAction::Pause => capabilities.can_stop,
+        ControlAction::Resume => capabilities.can_resume,
+        ControlAction::Step => capabilities.can_step,
+        ControlAction::CreateSnapshot { .. } => capabilities.can_snapshot,
     }
 }
 

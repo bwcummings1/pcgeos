@@ -18,3 +18,7 @@ Provided surface:
 
 The module emits the same versioned line-oriented protocol consumed by
 `swat-adapter-agent`.
+
+Runnable example:
+
+- `python3 sdk/python/examples/emit_protocol.py`

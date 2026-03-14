@@ -3,10 +3,14 @@ use std::time::{Duration, Instant};
 
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
+use swat_core::{ArtifactAccess, ArtifactEncoding, ArtifactId, ArtifactRef};
 use swat_core::{ControlAction, EventKind};
 use swat_session::SessionManager;
 use swat_store::InMemoryStore;
-use swat_value::{DecodedValueData, QueriedValue, ValueKind, decode_event_artifacts};
+use swat_store::StoredArtifact;
+use swat_value::{
+    DecodedValueData, QueriedValue, ValueKind, decode_artifact, decode_event_artifacts,
+};
 
 #[test]
 fn decodes_mock_boundary_artifact_as_json() {
@@ -76,4 +80,53 @@ fn decodes_local_process_output_as_text() {
     }
 
     panic!("did not observe local-process output artifact before timeout");
+}
+
+#[test]
+fn value_presentations_format_json_text_and_binary_for_operators() {
+    let json_value = decode_artifact(StoredArtifact {
+        artifact_ref: ArtifactRef {
+            artifact_id: ArtifactId::from_raw(1),
+            media_type: "application/json".to_string(),
+            encoding: ArtifactEncoding::Json,
+            size_hint: None,
+            access: ArtifactAccess::Lazy,
+        },
+        created_at: swat_core::Timestamp::from_millis(1),
+        bytes: br#"{"tool":"search","decision":"call-tool"}"#.to_vec(),
+    })
+    .unwrap();
+    let json_presentation = json_value.presentation(12);
+    assert!(json_presentation.preview.ends_with("..."));
+    assert!(json_presentation.detail.contains('\n'));
+
+    let text_value = decode_artifact(StoredArtifact {
+        artifact_ref: ArtifactRef {
+            artifact_id: ArtifactId::from_raw(2),
+            media_type: "text/plain".to_string(),
+            encoding: ArtifactEncoding::Utf8,
+            size_hint: None,
+            access: ArtifactAccess::Inline,
+        },
+        created_at: swat_core::Timestamp::from_millis(2),
+        bytes: b"line one\nline two".to_vec(),
+    })
+    .unwrap();
+    assert_eq!(text_value.preview(32), "line one\\nline two");
+
+    let binary_value = decode_artifact(StoredArtifact {
+        artifact_ref: ArtifactRef {
+            artifact_id: ArtifactId::from_raw(3),
+            media_type: "application/octet-stream".to_string(),
+            encoding: ArtifactEncoding::Binary,
+            size_hint: None,
+            access: ArtifactAccess::Lazy,
+        },
+        created_at: swat_core::Timestamp::from_millis(3),
+        bytes: vec![0xde, 0xad, 0xbe, 0xef, 0x01],
+    })
+    .unwrap();
+    let binary_presentation = binary_value.presentation(32);
+    assert!(binary_presentation.preview.contains("de ad be ef"));
+    assert!(binary_presentation.detail.contains("de ad be ef"));
 }

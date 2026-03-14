@@ -47,7 +47,8 @@ time.sleep(0.1)
 
     for command in [
         "attach".to_string(),
-        "session".to_string(),
+        "status".to_string(),
+        "help query".to_string(),
         r#"trigger-expr-once pause_web kind == ToolBoundary and artifact.json $.name == "web_search""#
             .to_string(),
         format!("trigger-save {trigger_path}"),

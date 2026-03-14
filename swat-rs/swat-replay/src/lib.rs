@@ -50,6 +50,32 @@ impl ReplayPlan {
         Self { directives }
     }
 
+    pub fn from_events_up_to(events: &[EventEnvelope], max_sequence_no: u64) -> Self {
+        let filtered = events
+            .iter()
+            .filter(|event| event.sequence_no <= max_sequence_no)
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::from_events(&filtered)
+    }
+
+    pub fn for_boundary(events: &[EventEnvelope], boundary_id: BoundaryId) -> Self {
+        let filtered = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::Boundary {
+                        boundary_id: event_boundary_id,
+                        ..
+                    } if event_boundary_id == boundary_id
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::from_events(&filtered)
+    }
+
     pub fn len(&self) -> usize {
         self.directives.len()
     }
@@ -60,6 +86,10 @@ impl ReplayPlan {
 
     pub fn directives(&self) -> impl Iterator<Item = &BoundaryReplayDirective> {
         self.directives.values()
+    }
+
+    pub fn has_boundary(&self, boundary_id: BoundaryId) -> bool {
+        self.directives.contains_key(&boundary_id)
     }
 }
 

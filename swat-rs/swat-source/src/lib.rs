@@ -29,6 +29,28 @@ pub struct SourceSnippet {
     pub lines: Vec<SourceLine>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceFailureKind {
+    SyntheticPath,
+    MissingFile,
+    InvalidLine,
+    InvalidMetadata,
+    Io,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFailure {
+    pub kind: SourceFailureKind,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInspection {
+    pub location: Option<SourceLocation>,
+    pub snippet: Option<SourceSnippet>,
+    pub failure: Option<SourceFailure>,
+}
+
 pub fn extract_event_source_location<S: SwatStore + ?Sized>(
     store: &S,
     event: &EventEnvelope,
@@ -76,6 +98,9 @@ pub fn load_source_snippet(
             location.file
         )));
     }
+    if location.line == 0 {
+        return Err(SwatError::new("source location line numbers are 1-based"));
+    }
 
     let contents = fs::read_to_string(&location.file).map_err(|err| {
         SwatError::new(format!(
@@ -87,9 +112,6 @@ pub fn load_source_snippet(
         .lines()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    if location.line == 0 {
-        return Err(SwatError::new("source location line numbers are 1-based"));
-    }
 
     let start_line = location.line.saturating_sub(before).max(1);
     let end_line = (location.line + after).min(all_lines.len());
@@ -122,6 +144,59 @@ pub fn resolve_event_source<S: SwatStore + ?Sized>(
     Ok(Some(load_source_snippet(location, before, after)?))
 }
 
+pub fn inspect_event_source<S: SwatStore + ?Sized>(
+    store: &S,
+    event: &EventEnvelope,
+    before: usize,
+    after: usize,
+) -> SwatResult<SourceInspection> {
+    match extract_event_source_location(store, event) {
+        Ok(Some(location)) => match load_source_snippet(location.clone(), before, after) {
+            Ok(snippet) => Ok(SourceInspection {
+                location: Some(location),
+                snippet: Some(snippet),
+                failure: None,
+            }),
+            Err(err) => Ok(SourceInspection {
+                location: Some(location.clone()),
+                snippet: None,
+                failure: Some(SourceFailure {
+                    kind: classify_failure(Some(&location)),
+                    message: err.to_string(),
+                }),
+            }),
+        },
+        Ok(None) => Ok(SourceInspection {
+            location: None,
+            snippet: None,
+            failure: None,
+        }),
+        Err(err) => Ok(SourceInspection {
+            location: None,
+            snippet: None,
+            failure: Some(SourceFailure {
+                kind: SourceFailureKind::InvalidMetadata,
+                message: err.to_string(),
+            }),
+        }),
+    }
+}
+
 pub fn is_real_source_path(path: &str) -> bool {
     !path.starts_with('<') && Path::new(path).exists()
+}
+
+fn classify_failure(location: Option<&SourceLocation>) -> SourceFailureKind {
+    let Some(location) = location else {
+        return SourceFailureKind::InvalidMetadata;
+    };
+    if location.file.starts_with('<') {
+        SourceFailureKind::SyntheticPath
+    } else if location.line == 0 {
+        SourceFailureKind::InvalidLine
+    } else if !Path::new(&location.file).exists() {
+        SourceFailureKind::MissingFile
+    } else {
+        SourceFailureKind::Io
+    }
 }

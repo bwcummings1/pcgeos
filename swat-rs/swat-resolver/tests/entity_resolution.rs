@@ -89,6 +89,22 @@ time.sleep(0.1)
     assert!(index.entities.iter().any(|entity| {
         entity.entity.kind == ResolvedEntityKind::StateKey && entity.entity.name == "memory.turn"
     }));
+    assert!(index.relations.iter().any(|relation| {
+        let names = [
+            (&relation.left.kind, relation.left.name.as_str()),
+            (&relation.right.kind, relation.right.name.as_str()),
+        ];
+        names.contains(&(&ResolvedEntityKind::CorrelationId, "req-42"))
+            && names.contains(&(&ResolvedEntityKind::ToolName, "web_search"))
+    }));
+    assert!(index.correlation_groups.iter().any(|group| {
+        group.correlation_id == "req-42"
+            && group.span_ids.iter().any(|span| span == "model-1")
+            && group.span_ids.iter().any(|span| span == "tool-1")
+            && group.entities.iter().any(|entity| {
+                entity.kind == ResolvedEntityKind::ModelName && entity.name == "gpt-4.1-mini"
+            })
+    }));
 
     let web_entities = resolver.find_entities(session_id, "web").unwrap();
     assert_eq!(web_entities.len(), 1);
@@ -115,6 +131,13 @@ time.sleep(0.1)
         .unwrap();
     let model_span = resolver.boundary_span(session_id, model_boundary_id);
     assert_eq!(model_span.len(), 2);
+    assert_eq!(
+        resolver
+            .events_for_span(session_id, "model-1")
+            .unwrap()
+            .len(),
+        2
+    );
 
     let model_request = resolver
         .events_by_kind(session_id, EventKind::ModelBoundary)

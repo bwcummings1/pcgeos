@@ -66,6 +66,16 @@ fn mock_boundary_artifact_can_trigger_pause() {
         }
         payload => panic!("unexpected payload: {payload:?}"),
     }
+
+    let trigger = &engine.triggers()[0];
+    let matched_event = store
+        .events_for_session(session_id)
+        .into_iter()
+        .find(|event| event.event_id == second.trigger_matches[0].event_id)
+        .unwrap();
+    assert_eq!(trigger.hit_count, 1);
+    assert_eq!(trigger.last_hit_event_id, Some(second.trigger_matches[0].event_id));
+    assert_eq!(trigger.last_hit_sequence_no, Some(matched_event.sequence_no));
 }
 
 #[test]
@@ -112,6 +122,122 @@ fn mock_boundary_json_path_can_trigger_pause() {
     assert_eq!(second.trigger_matches.len(), 1);
     assert_eq!(second.trigger_events.len(), 1);
     assert!(last_control_response(&second).unwrap().accepted);
+}
+
+#[test]
+fn mock_boundary_can_trigger_snapshot_creation() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new().with_trigger(
+        Trigger::new(
+            "snapshot-on-tool-search",
+            TriggerPredicate::ArtifactJsonPathEquals {
+                path: "$.tool".to_string(),
+                expected: QueriedValue::String("search".to_string()),
+            },
+            vec![TriggerAction::CreateSnapshot {
+                reason: "capture-search-boundary".to_string(),
+            }],
+        )
+        .fire_once(),
+    );
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    manager
+        .control(session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .unwrap();
+
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    let second = pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+
+    assert_eq!(second.trigger_matches.len(), 1);
+    assert_eq!(second.control_reports.len(), 1);
+    let response = last_control_response(&second).unwrap();
+    assert!(response.accepted);
+    assert!(response.summary.contains("capture-search-boundary"));
+    let trigger = &engine.triggers()[0];
+    assert_eq!(trigger.hit_count, 1);
+    assert_eq!(trigger.last_hit_event_id, Some(second.trigger_matches[0].event_id));
+    let matched_event = store
+        .events_for_session(session_id)
+        .into_iter()
+        .find(|event| event.event_id == second.trigger_matches[0].event_id)
+        .unwrap();
+    assert_eq!(trigger.last_hit_sequence_no, Some(matched_event.sequence_no));
+}
+
+#[test]
+fn disabled_trigger_can_be_reenabled_before_matching_again() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let trigger = Trigger::new(
+        "pause-on-tool-search",
+        TriggerPredicate::ArtifactJsonPathEquals {
+            path: "$.tool".to_string(),
+            expected: QueriedValue::String("search".to_string()),
+        },
+        vec![TriggerAction::PauseTarget],
+    )
+    .fire_once()
+    .disabled();
+    let trigger_id = trigger.trigger_id;
+    let mut engine = TriggerEngine::new().with_trigger(trigger);
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    manager
+        .control(session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .unwrap();
+
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    let second = pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    assert!(second.trigger_matches.is_empty());
+
+    let boundary_event = store
+        .events_for_session(session_id)
+        .into_iter()
+        .find(|event| event.kind == EventKind::ModelBoundary)
+        .unwrap();
+    assert_eq!(engine.set_enabled(trigger_id, true), Some(false));
+
+    let matches = engine.evaluate_event(&boundary_event, &store);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].trigger_id, trigger_id);
+    let trigger = &engine.triggers()[0];
+    assert_eq!(trigger.hit_count, 1);
+    assert_eq!(trigger.last_hit_event_id, Some(boundary_event.event_id));
+    assert_eq!(trigger.last_hit_sequence_no, Some(boundary_event.sequence_no));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use swat_core::{
     AdapterEmission, ArtifactAlias, ArtifactBinding, ArtifactId, ArtifactRef, EventEnvelope,
-    EventId, SessionId, SwatError, SwatResult, TargetId, Timestamp,
+    EventId, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult, TargetId, Timestamp,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,12 +34,21 @@ pub trait SwatStore {
     fn artifact(&self, artifact_id: ArtifactId) -> Option<StoredArtifact>;
 
     fn artifact_count(&self) -> usize;
+
+    fn record_snapshot(&mut self, snapshot: SnapshotRecord) -> SwatResult<()>;
+
+    fn snapshots(&self) -> Vec<SnapshotRecord>;
+
+    fn snapshots_for_session(&self, session_id: SessionId) -> Vec<SnapshotRecord>;
+
+    fn snapshot(&self, snapshot_id: SnapshotId) -> Option<SnapshotRecord>;
 }
 
 #[derive(Default)]
 pub struct InMemoryStore {
     events: Vec<EventEnvelope>,
     artifacts: BTreeMap<ArtifactId, StoredArtifact>,
+    snapshots: BTreeMap<SnapshotId, SnapshotRecord>,
 }
 
 impl InMemoryStore {
@@ -71,6 +80,22 @@ impl InMemoryStore {
 
     pub fn artifact_count(&self) -> usize {
         <Self as SwatStore>::artifact_count(self)
+    }
+
+    pub fn record_snapshot(&mut self, snapshot: SnapshotRecord) -> SwatResult<()> {
+        <Self as SwatStore>::record_snapshot(self, snapshot)
+    }
+
+    pub fn snapshots(&self) -> Vec<SnapshotRecord> {
+        <Self as SwatStore>::snapshots(self)
+    }
+
+    pub fn snapshots_for_session(&self, session_id: SessionId) -> Vec<SnapshotRecord> {
+        <Self as SwatStore>::snapshots_for_session(self, session_id)
+    }
+
+    pub fn snapshot(&self, snapshot_id: SnapshotId) -> Option<SnapshotRecord> {
+        <Self as SwatStore>::snapshot(self, snapshot_id)
     }
 }
 
@@ -118,6 +143,27 @@ impl SwatStore for InMemoryStore {
     fn artifact_count(&self) -> usize {
         self.artifacts.len()
     }
+
+    fn record_snapshot(&mut self, snapshot: SnapshotRecord) -> SwatResult<()> {
+        self.snapshots.insert(snapshot.snapshot_id, snapshot);
+        Ok(())
+    }
+
+    fn snapshots(&self) -> Vec<SnapshotRecord> {
+        self.snapshots.values().cloned().collect()
+    }
+
+    fn snapshots_for_session(&self, session_id: SessionId) -> Vec<SnapshotRecord> {
+        self.snapshots
+            .values()
+            .filter(|snapshot| snapshot.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+
+    fn snapshot(&self, snapshot_id: SnapshotId) -> Option<SnapshotRecord> {
+        self.snapshots.get(&snapshot_id).cloned()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,8 +178,10 @@ pub struct FileStore {
     artifacts_dir: PathBuf,
     events_path: PathBuf,
     artifact_index_path: PathBuf,
+    snapshots_path: PathBuf,
     events: Vec<EventEnvelope>,
     artifacts: BTreeMap<ArtifactId, PersistedArtifactRecord>,
+    snapshots: BTreeMap<SnapshotId, SnapshotRecord>,
 }
 
 impl FileStore {
@@ -142,6 +190,7 @@ impl FileStore {
         let artifacts_dir = root.join("artifacts");
         let events_path = root.join("events.jsonl");
         let artifact_index_path = root.join("artifacts.jsonl");
+        let snapshots_path = root.join("snapshots.jsonl");
 
         fs::create_dir_all(&artifacts_dir).map_err(|err| {
             SwatError::new(format!(
@@ -151,12 +200,18 @@ impl FileStore {
         })?;
         touch_file(&events_path)?;
         touch_file(&artifact_index_path)?;
+        touch_file(&snapshots_path)?;
 
         let events = load_jsonl::<EventEnvelope>(&events_path)?;
         let artifact_records = load_jsonl::<PersistedArtifactRecord>(&artifact_index_path)?;
+        let snapshot_records = load_jsonl::<SnapshotRecord>(&snapshots_path)?;
         let artifacts = artifact_records
             .into_iter()
             .map(|record| (record.artifact_ref.artifact_id, record))
+            .collect();
+        let snapshots = snapshot_records
+            .into_iter()
+            .map(|record| (record.snapshot_id, record))
             .collect();
 
         Ok(Self {
@@ -164,8 +219,10 @@ impl FileStore {
             artifacts_dir,
             events_path,
             artifact_index_path,
+            snapshots_path,
             events,
             artifacts,
+            snapshots,
         })
     }
 
@@ -249,6 +306,28 @@ impl SwatStore for FileStore {
 
     fn artifact_count(&self) -> usize {
         self.artifacts.len()
+    }
+
+    fn record_snapshot(&mut self, snapshot: SnapshotRecord) -> SwatResult<()> {
+        append_jsonl(&self.snapshots_path, &snapshot)?;
+        self.snapshots.insert(snapshot.snapshot_id, snapshot);
+        Ok(())
+    }
+
+    fn snapshots(&self) -> Vec<SnapshotRecord> {
+        self.snapshots.values().cloned().collect()
+    }
+
+    fn snapshots_for_session(&self, session_id: SessionId) -> Vec<SnapshotRecord> {
+        self.snapshots
+            .values()
+            .filter(|snapshot| snapshot.session_id == session_id)
+            .cloned()
+            .collect()
+    }
+
+    fn snapshot(&self, snapshot_id: SnapshotId) -> Option<SnapshotRecord> {
+        self.snapshots.get(&snapshot_id).cloned()
     }
 }
 

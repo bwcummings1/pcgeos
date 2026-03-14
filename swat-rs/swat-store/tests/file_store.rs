@@ -32,6 +32,17 @@ fn file_store_persists_events_and_artifacts_across_reopen() {
         .unwrap();
     manager.pump(session_id, &mut adapter, &mut store).unwrap();
     let boundary_pump = manager.pump(session_id, &mut adapter, &mut store).unwrap();
+    let snapshot = manager
+        .control(
+            session_id,
+            &mut adapter,
+            ControlAction::CreateSnapshot {
+                reason: "persist snapshot".to_string(),
+            },
+            &mut store,
+        )
+        .unwrap();
+    let snapshot_record = snapshot.snapshot.unwrap();
 
     let boundary_event = boundary_pump
         .stored_events
@@ -46,15 +57,19 @@ fn file_store_persists_events_and_artifacts_across_reopen() {
     );
     let initial_event_count = store.events().len();
     let initial_artifact_count = store.artifact_count();
+    let initial_snapshot_count = store.snapshots().len();
 
     drop(store);
 
     let reopened = FileStore::open(&root).unwrap();
     assert_eq!(reopened.events().len(), initial_event_count);
     assert_eq!(reopened.artifact_count(), initial_artifact_count);
+    assert_eq!(reopened.snapshots().len(), initial_snapshot_count);
 
     let reopened_artifact = reopened.artifact(artifact_ref.artifact_id).unwrap();
     assert_eq!(reopened_artifact, initial_artifact);
+    let reopened_snapshot = reopened.snapshot(snapshot_record.snapshot_id).unwrap();
+    assert_eq!(reopened_snapshot, snapshot_record);
 
     let reopened_events = reopened.events_for_session(session_id);
     assert!(reopened_events.iter().any(|event| {
@@ -69,6 +84,7 @@ fn file_store_persists_events_and_artifacts_across_reopen() {
             .unwrap()
             .exists()
     );
+    assert!(reopened_events.iter().any(|event| event.kind == EventKind::Snapshot));
 
     fs::remove_dir_all(&root).unwrap();
 }

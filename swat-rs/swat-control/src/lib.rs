@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use swat_core::{
     AdapterEmission, ControlAction, ControlResponse, EventEnvelope, EventKind, EventPayload,
-    PendingEvent, SwatResult, TargetAdapter, TriggerId,
+    EventId, PendingEvent, SwatResult, TargetAdapter, TriggerId,
 };
 use swat_expr::{QueryExpr, evaluate_expression};
 use swat_schema::{SchemaNode, validate_decoded_value};
@@ -42,6 +42,9 @@ pub struct Trigger {
     pub actions: Vec<TriggerAction>,
     pub fire_once: bool,
     pub enabled: bool,
+    pub hit_count: u64,
+    pub last_hit_event_id: Option<EventId>,
+    pub last_hit_sequence_no: Option<u64>,
 }
 
 impl Trigger {
@@ -57,6 +60,9 @@ impl Trigger {
             actions,
             fire_once: false,
             enabled: true,
+            hit_count: 0,
+            last_hit_event_id: None,
+            last_hit_sequence_no: None,
         }
     }
 
@@ -138,7 +144,7 @@ impl TriggerEngine {
     ) -> Vec<TriggerMatch> {
         let mut matches = Vec::new();
 
-        for trigger in &self.triggers {
+        for trigger in &mut self.triggers {
             if !trigger.enabled {
                 continue;
             }
@@ -161,6 +167,10 @@ impl TriggerEngine {
                 summary,
                 actions: trigger.actions.clone(),
             });
+
+            trigger.hit_count += 1;
+            trigger.last_hit_event_id = Some(event.event_id);
+            trigger.last_hit_sequence_no = Some(event.sequence_no);
 
             if trigger.fire_once {
                 self.fired_once.insert(trigger.trigger_id);

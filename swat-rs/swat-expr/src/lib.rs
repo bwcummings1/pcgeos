@@ -5,9 +5,36 @@ use swat_store::SwatStore;
 use swat_value::{QueriedValue, decode_artifact};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryField {
+    Kind,
+    Summary,
+    EventId,
+    SequenceNo,
+    CorrelationId,
+    BoundaryId,
+    SpanId,
+    ValueKey,
+    SourceFile,
+    SourceFunction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryValue {
+    Kind(EventKind),
+    Value(QueriedValue),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryExpr {
-    KindIs(EventKind),
-    SummaryContains(String),
+    FieldEquals {
+        field: QueryField,
+        expected: QueryValue,
+    },
+    FieldContains {
+        field: QueryField,
+        needle: String,
+    },
+    FieldExists(QueryField),
     ArtifactTextContains(String),
     ArtifactJsonPathExists(String),
     ArtifactJsonPathEquals {
@@ -16,6 +43,7 @@ pub enum QueryExpr {
     },
     And(Vec<QueryExpr>),
     Or(Vec<QueryExpr>),
+    Not(Box<QueryExpr>),
 }
 
 pub fn parse_expression(input: &str) -> SwatResult<QueryExpr> {
@@ -34,10 +62,23 @@ pub fn evaluate_expression<S: SwatStore + ?Sized>(
     expr: &QueryExpr,
 ) -> bool {
     match expr {
-        QueryExpr::KindIs(kind) => event.kind == *kind,
-        QueryExpr::SummaryContains(needle) => payload_summary(event)
-            .map(|summary| summary.contains(needle))
-            .unwrap_or(false),
+        QueryExpr::FieldEquals { field, expected } => match expected {
+            QueryValue::Kind(kind) => *field == QueryField::Kind && event.kind == *kind,
+            QueryValue::Value(expected) => query_field_values(store, event, field)
+                .into_iter()
+                .any(|actual| actual == *expected),
+        },
+        QueryExpr::FieldContains { field, needle } => query_field_values(store, event, field)
+            .into_iter()
+            .filter_map(|value| match value {
+                QueriedValue::String(value) => Some(value),
+                QueriedValue::Number(value) => Some(value),
+                QueriedValue::Json(value) => Some(value),
+                QueriedValue::Bool(value) => Some(value.to_string()),
+                QueriedValue::Null => None,
+            })
+            .any(|value| value.contains(needle)),
+        QueryExpr::FieldExists(field) => !query_field_values(store, event, field).is_empty(),
         QueryExpr::ArtifactTextContains(needle) => event.artifact_refs.iter().any(|artifact_ref| {
             store
                 .artifact(artifact_ref.artifact_id)
@@ -70,6 +111,7 @@ pub fn evaluate_expression<S: SwatStore + ?Sized>(
         QueryExpr::Or(exprs) => exprs
             .iter()
             .any(|expr| evaluate_expression(store, event, expr)),
+        QueryExpr::Not(expr) => !evaluate_expression(store, event, expr),
     }
 }
 
@@ -86,6 +128,85 @@ fn payload_summary(event: &EventEnvelope) -> Option<&str> {
     }
 }
 
+fn query_field_values<S: SwatStore + ?Sized>(
+    store: &S,
+    event: &EventEnvelope,
+    field: &QueryField,
+) -> Vec<QueriedValue> {
+    match field {
+        QueryField::Kind => Vec::new(),
+        QueryField::Summary => payload_summary(event)
+            .map(|summary| vec![QueriedValue::String(summary.to_string())])
+            .unwrap_or_default(),
+        QueryField::EventId => vec![QueriedValue::Number(event.event_id.raw().to_string())],
+        QueryField::SequenceNo => vec![QueriedValue::Number(event.sequence_no.to_string())],
+        QueryField::CorrelationId => {
+            let mut values = Vec::new();
+            if let Some(correlation_id) = &event.causality.correlation_id {
+                push_unique(&mut values, QueriedValue::String(correlation_id.clone()));
+            }
+            extend_json_path_values(store, event, "$.correlation_id", &mut values);
+            values
+        }
+        QueryField::BoundaryId => match event.payload {
+            EventPayload::Boundary { boundary_id, .. } => {
+                vec![QueriedValue::Number(boundary_id.raw().to_string())]
+            }
+            _ => Vec::new(),
+        },
+        QueryField::SpanId => {
+            let mut values = Vec::new();
+            extend_json_path_values(store, event, "$.span_id", &mut values);
+            values
+        }
+        QueryField::ValueKey => match &event.payload {
+            EventPayload::Value { value_key, .. } => {
+                vec![QueriedValue::String(value_key.clone())]
+            }
+            _ => Vec::new(),
+        },
+        QueryField::SourceFile => {
+            let mut values = Vec::new();
+            extend_json_path_values(store, event, "$.file", &mut values);
+            values
+        }
+        QueryField::SourceFunction => {
+            let mut values = Vec::new();
+            extend_json_path_values(store, event, "$.function", &mut values);
+            values
+        }
+    }
+}
+
+fn extend_json_path_values<S: SwatStore + ?Sized>(
+    store: &S,
+    event: &EventEnvelope,
+    path: &str,
+    values: &mut Vec<QueriedValue>,
+) {
+    for artifact_ref in &event.artifact_refs {
+        let Some(artifact) = store.artifact(artifact_ref.artifact_id) else {
+            continue;
+        };
+        let Ok(decoded) = decode_artifact(artifact) else {
+            continue;
+        };
+        let Ok(value) = decoded.query_json_path(path) else {
+            continue;
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        push_unique(values, value);
+    }
+}
+
+fn push_unique(values: &mut Vec<QueriedValue>, value: QueriedValue) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Token {
     Ident(String),
@@ -96,6 +217,7 @@ enum Token {
     Exists,
     And,
     Or,
+    Not,
     LParen,
     RParen,
 }
@@ -140,6 +262,11 @@ impl Parser {
             return Ok(expr);
         }
 
+        if matches!(self.peek(), Some(Token::Not)) {
+            self.index += 1;
+            return Ok(QueryExpr::Not(Box::new(self.parse_primary()?)));
+        }
+
         self.parse_atom()
     }
 
@@ -149,36 +276,55 @@ impl Parser {
         };
 
         match token {
-            Token::Ident(name) if name == "kind" => {
-                self.expect_token(Token::EqEq)?;
-                let kind = self.expect_ident()?;
-                Ok(QueryExpr::KindIs(parse_event_kind(&kind)?))
-            }
-            Token::Ident(name) if name == "summary" => {
-                self.expect_token(Token::Contains)?;
-                let needle = self.expect_string()?;
-                Ok(QueryExpr::SummaryContains(needle))
-            }
             Token::Ident(name) if name == "artifact.text" => {
                 self.expect_token(Token::Contains)?;
-                let needle = self.expect_string()?;
-                Ok(QueryExpr::ArtifactTextContains(needle))
+                Ok(QueryExpr::ArtifactTextContains(self.expect_string()?))
             }
             Token::Ident(name) if name == "artifact.json" => match self.next() {
                 Some(Token::Exists) => {
-                    let path = self.expect_json_path()?;
-                    Ok(QueryExpr::ArtifactJsonPathExists(path))
+                    Ok(QueryExpr::ArtifactJsonPathExists(self.expect_json_path()?))
                 }
                 Some(Token::JsonPath(path)) => {
                     self.expect_token(Token::EqEq)?;
-                    let expected = self.expect_literal()?;
-                    Ok(QueryExpr::ArtifactJsonPathEquals { path, expected })
+                    Ok(QueryExpr::ArtifactJsonPathEquals {
+                        path,
+                        expected: self.expect_literal()?,
+                    })
                 }
                 other => Err(SwatError::new(format!(
                     "unexpected token after artifact.json: {:?}",
                     other
                 ))),
             },
+            Token::Ident(name) => {
+                let field = parse_query_field(&name)?;
+                match self.next() {
+                    Some(Token::EqEq) => {
+                        let expected = if field == QueryField::Kind {
+                            QueryValue::Kind(self.expect_event_kind()?)
+                        } else {
+                            QueryValue::Value(self.expect_literal()?)
+                        };
+                        Ok(QueryExpr::FieldEquals { field, expected })
+                    }
+                    Some(Token::Contains) => {
+                        if !field_supports_contains(&field) {
+                            return Err(SwatError::new(format!(
+                                "field '{name}' does not support contains"
+                            )));
+                        }
+                        Ok(QueryExpr::FieldContains {
+                            field,
+                            needle: self.expect_string()?,
+                        })
+                    }
+                    Some(Token::Exists) => Ok(QueryExpr::FieldExists(field)),
+                    other => Err(SwatError::new(format!(
+                        "unexpected token after field '{name}': {:?}",
+                        other
+                    ))),
+                }
+            }
             other => Err(SwatError::new(format!(
                 "could not parse expression atom from token {:?}",
                 other
@@ -192,16 +338,6 @@ impl Parser {
             other => Err(SwatError::new(format!(
                 "expected token {:?}, found {:?}",
                 expected, other
-            ))),
-        }
-    }
-
-    fn expect_ident(&mut self) -> SwatResult<String> {
-        match self.next() {
-            Some(Token::Ident(value)) => Ok(value),
-            other => Err(SwatError::new(format!(
-                "expected identifier, found {:?}",
-                other
             ))),
         }
     }
@@ -226,13 +362,24 @@ impl Parser {
         }
     }
 
+    fn expect_event_kind(&mut self) -> SwatResult<EventKind> {
+        match self.next() {
+            Some(Token::Ident(value)) => parse_event_kind(&value),
+            Some(Token::String(value)) => parse_event_kind(&value),
+            other => Err(SwatError::new(format!(
+                "expected event kind literal, found {:?}",
+                other
+            ))),
+        }
+    }
+
     fn expect_literal(&mut self) -> SwatResult<QueriedValue> {
         match self.next() {
             Some(Token::String(value)) => Ok(QueriedValue::String(value)),
             Some(Token::Ident(value)) if value == "true" => Ok(QueriedValue::Bool(true)),
             Some(Token::Ident(value)) if value == "false" => Ok(QueriedValue::Bool(false)),
             Some(Token::Ident(value)) if value == "null" => Ok(QueriedValue::Null),
-            Some(Token::Ident(value)) if value.chars().all(|ch| ch.is_ascii_digit()) => {
+            Some(Token::Ident(value)) if value.parse::<i64>().is_ok() => {
                 Ok(QueriedValue::Number(value))
             }
             other => Err(SwatError::new(format!(
@@ -253,6 +400,34 @@ impl Parser {
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.index)
     }
+}
+
+fn parse_query_field(name: &str) -> SwatResult<QueryField> {
+    match name {
+        "kind" => Ok(QueryField::Kind),
+        "summary" => Ok(QueryField::Summary),
+        "event.id" => Ok(QueryField::EventId),
+        "sequence" | "sequence_no" => Ok(QueryField::SequenceNo),
+        "correlation" | "correlation.id" => Ok(QueryField::CorrelationId),
+        "boundary" | "boundary.id" => Ok(QueryField::BoundaryId),
+        "span" | "span.id" => Ok(QueryField::SpanId),
+        "value.key" => Ok(QueryField::ValueKey),
+        "source.file" => Ok(QueryField::SourceFile),
+        "source.function" => Ok(QueryField::SourceFunction),
+        _ => Err(SwatError::new(format!("unknown query field '{name}'"))),
+    }
+}
+
+fn field_supports_contains(field: &QueryField) -> bool {
+    matches!(
+        field,
+        QueryField::Summary
+            | QueryField::CorrelationId
+            | QueryField::SpanId
+            | QueryField::ValueKey
+            | QueryField::SourceFile
+            | QueryField::SourceFunction
+    )
 }
 
 fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
@@ -344,6 +519,7 @@ fn tokenize(input: &str) -> SwatResult<Vec<Token>> {
             "exists" => Token::Exists,
             "and" => Token::And,
             "or" => Token::Or,
+            "not" => Token::Not,
             _ => Token::Ident(word),
         };
         tokens.push(token);

@@ -2,13 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use swat_api::TraceInspector;
+use swat_api::{LiveSessionApi, TraceInspector};
 use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerMatch, pump_with_triggers};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, SessionId,
-    SwatError, SwatResult, TargetAdapter, TriggerId,
+    SnapshotId, SwatError, SwatResult, TargetAdapter, TriggerId,
 };
 use swat_expr::parse_expression;
 use swat_script::ScriptHost;
@@ -17,7 +19,9 @@ use swat_store::SwatStore;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    Help,
+    Help {
+        topic: Option<String>,
+    },
     Attach,
     Session,
     Pump,
@@ -27,6 +31,10 @@ pub enum Command {
     Snapshot {
         reason: String,
     },
+    Snapshots,
+    SnapshotShow {
+        snapshot_id: SnapshotId,
+    },
     Events {
         kind: Option<EventKind>,
     },
@@ -35,6 +43,10 @@ pub enum Command {
     },
     Artifacts {
         event_id: EventId,
+    },
+    ArtifactShow {
+        event_id: EventId,
+        index: usize,
     },
     Query {
         expr: String,
@@ -51,6 +63,17 @@ pub enum Command {
         expr: String,
         fire_once: bool,
     },
+    TriggerSnapshot {
+        name: String,
+        expr: String,
+        reason: String,
+    },
+    TriggerEnable {
+        trigger_id: TriggerId,
+    },
+    TriggerDisable {
+        trigger_id: TriggerId,
+    },
     TriggerSave {
         path: String,
     },
@@ -59,6 +82,12 @@ pub enum Command {
     },
     TriggerRemove {
         trigger_id: TriggerId,
+    },
+    Until {
+        expr: String,
+    },
+    Replay {
+        selector_id: u64,
     },
     Spans,
     Span {
@@ -120,32 +149,7 @@ impl CommandHost {
 
     pub fn execute_command(&mut self, command: Command) -> SwatResult<CommandOutput> {
         match command {
-            Command::Help => Ok(CommandOutput::new(
-                "available commands",
-                vec![
-                    "attach".to_string(),
-                    "session".to_string(),
-                    "pump".to_string(),
-                    "pause | resume | step".to_string(),
-                    "snapshot <reason>".to_string(),
-                    "events [EventKind]".to_string(),
-                    "event <event_id>".to_string(),
-                    "artifacts <event_id>".to_string(),
-                    "query <expr>".to_string(),
-                    "entities <needle>".to_string(),
-                    "correlation <id>".to_string(),
-                    "triggers".to_string(),
-                    "trigger-expr <name> <expr>".to_string(),
-                    "trigger-expr-once <name> <expr>".to_string(),
-                    "trigger-save <path>".to_string(),
-                    "trigger-load <path>".to_string(),
-                    "trigger-remove <trigger_id>".to_string(),
-                    "spans".to_string(),
-                    "span <boundary_id>".to_string(),
-                    "source <event_id> [before] [after]".to_string(),
-                    "script <rhai>".to_string(),
-                ],
-            )),
+            Command::Help { topic } => Ok(render_help(topic.as_deref())),
             Command::Attach => self.attach_or_describe(),
             Command::Session => self.describe_session(),
             Command::Pump => self.pump_once(),
@@ -153,9 +157,12 @@ impl CommandHost {
             Command::Resume => self.control(ControlAction::Resume),
             Command::Step => self.control(ControlAction::Step),
             Command::Snapshot { reason } => self.control(ControlAction::CreateSnapshot { reason }),
+            Command::Snapshots => self.list_snapshots(),
+            Command::SnapshotShow { snapshot_id } => self.show_snapshot(snapshot_id),
             Command::Events { kind } => self.list_events(kind),
             Command::Event { event_id } => self.show_event(event_id),
             Command::Artifacts { event_id } => self.show_artifacts(event_id),
+            Command::ArtifactShow { event_id, index } => self.show_artifact_detail(event_id, index),
             Command::Query { expr } => self.query_events(&expr),
             Command::Entities { needle } => self.list_entities(&needle),
             Command::Correlation { correlation_id } => self.list_correlation(&correlation_id),
@@ -165,9 +172,16 @@ impl CommandHost {
                 expr,
                 fire_once,
             } => self.add_trigger(&name, &expr, fire_once),
+            Command::TriggerSnapshot { name, expr, reason } => {
+                self.add_snapshot_trigger(&name, &expr, &reason)
+            }
+            Command::TriggerEnable { trigger_id } => self.set_trigger_enabled(trigger_id, true),
+            Command::TriggerDisable { trigger_id } => self.set_trigger_enabled(trigger_id, false),
             Command::TriggerSave { path } => self.save_triggers(&path),
             Command::TriggerLoad { path } => self.load_triggers(&path),
             Command::TriggerRemove { trigger_id } => self.remove_trigger(trigger_id),
+            Command::Until { expr } => self.until_expr(&expr),
+            Command::Replay { selector_id } => self.replay(selector_id),
             Command::Spans => self.list_spans(),
             Command::Span { boundary_id } => self.show_span(boundary_id),
             Command::Source {
@@ -206,6 +220,16 @@ impl CommandHost {
             .manager
             .session(session_id)
             .ok_or_else(|| SwatError::new("active session is missing from the session manager"))?;
+        let inspector = self.inspector();
+        let events = inspector.session_events(session_id);
+        let event_count = events.len();
+        let artifact_count = events
+            .iter()
+            .map(|event| event.artifact_refs.len())
+            .sum::<usize>();
+        let snapshot_count = inspector.session_snapshots(session_id).len();
+        let trigger_count = self.trigger_engine.triggers().len();
+        let last_event = events.last();
         let caps = session.capabilities;
         Ok(CommandOutput::new(
             format!(
@@ -218,6 +242,21 @@ impl CommandHost {
             vec![
                 format!("target_name={}", session.descriptor.target_name),
                 format!("replay_mode={:?}", session.descriptor.replay_mode),
+                format!(
+                    "counts events={} artifacts={} snapshots={} triggers={}",
+                    event_count, artifact_count, snapshot_count, trigger_count
+                ),
+                format!(
+                    "last_event={}",
+                    last_event
+                        .map(|event| format!(
+                            "{} seq={} kind={:?}",
+                            event.event_id.raw(),
+                            event.sequence_no,
+                            event.kind
+                        ))
+                        .unwrap_or_else(|| "-".to_string())
+                ),
                 format!(
                     "capabilities attach={} stream={} pause={} resume={} step={} read={} snapshot={} replay={} source={} schema={}",
                     caps.can_attach,
@@ -244,21 +283,7 @@ impl CommandHost {
             self.store.as_mut(),
             &mut self.trigger_engine,
         )?;
-        let mut lines = report
-            .pump_report
-            .stored_events
-            .iter()
-            .map(format_event_line)
-            .collect::<Vec<_>>();
-        lines.extend(report.trigger_events.iter().map(format_event_line));
-        lines.extend(report.trigger_matches.iter().map(format_trigger_match));
-        for control_report in &report.control_reports {
-            lines.extend(control_report.stored_events.iter().map(format_event_line));
-            lines.push(format!(
-                "control accepted={} summary={}",
-                control_report.response.accepted, control_report.response.summary
-            ));
-        }
+        let lines = format_controlled_pump_lines(&report);
         Ok(CommandOutput::new(
             format!(
                 "pumped {} event(s), {} trigger match(es), {} control action(s)",
@@ -272,15 +297,81 @@ impl CommandHost {
 
     fn control(&mut self, action: ControlAction) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let report = self.manager.control(
-            session_id,
-            self.adapter.as_mut(),
-            action,
-            self.store.as_mut(),
-        )?;
+        let report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.control(session_id, action)?
+        };
+        let control_report = report.value;
+        let mut lines = report
+            .policy_events
+            .iter()
+            .map(format_event_line)
+            .collect::<Vec<_>>();
+        lines.extend(control_report.stored_events.iter().map(format_event_line));
+        if let Some(snapshot) = &control_report.snapshot {
+            lines.push(format!(
+                "snapshot={} reason={:?} captured_seq={}",
+                snapshot.snapshot_id.raw(),
+                snapshot.reason,
+                snapshot.captured_sequence_no
+            ));
+        }
+        let summary = control_report
+            .snapshot
+            .as_ref()
+            .map(|snapshot| format!("created snapshot {}", snapshot.snapshot_id.raw()))
+            .unwrap_or(control_report.response.summary);
+        Ok(CommandOutput::new(summary, lines))
+    }
+
+    fn list_snapshots(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let lines = inspector
+            .session_snapshots(session_id)
+            .into_iter()
+            .filter_map(|snapshot| inspector.snapshot_inspection(snapshot.snapshot_id))
+            .map(|inspection| {
+                format!(
+                    "snapshot={} seq={} events={} replay={} reason={:?}",
+                    inspection.snapshot.snapshot_id.raw(),
+                    inspection.snapshot.captured_sequence_no,
+                    inspection.captured_event_count,
+                    inspection.replay_directive_count,
+                    inspection.snapshot.reason
+                )
+            })
+            .collect::<Vec<_>>();
         Ok(CommandOutput::new(
-            report.response.summary,
-            report.stored_events.iter().map(format_event_line).collect(),
+            format!("{} snapshot(s)", lines.len()),
+            lines,
+        ))
+    }
+
+    fn show_snapshot(&self, snapshot_id: SnapshotId) -> SwatResult<CommandOutput> {
+        let inspector = self.inspector();
+        let inspection = inspector
+            .snapshot_inspection(snapshot_id)
+            .ok_or_else(|| SwatError::new(format!("unknown snapshot {}", snapshot_id.raw())))?;
+        let mut lines = vec![
+            format!("session={}", inspection.snapshot.session_id.raw()),
+            format!("target={}", inspection.snapshot.target_id.raw()),
+            format!("reason={:?}", inspection.snapshot.reason),
+            format!("captured_seq={}", inspection.snapshot.captured_sequence_no),
+            format!("captured_events={}", inspection.captured_event_count),
+            format!("replay_directives={}", inspection.replay_directive_count),
+        ];
+        if let Some(snapshot_event) = inspection.snapshot_event {
+            lines.push(format_event_line(&snapshot_event));
+        }
+        Ok(CommandOutput::new(
+            format!("snapshot {}", snapshot_id.raw()),
+            lines,
         ))
     }
 
@@ -331,20 +422,59 @@ impl CommandHost {
 
     fn show_artifacts(&self, event_id: EventId) -> SwatResult<CommandOutput> {
         let event = self.lookup_event(event_id)?;
-        let decoded = self.inspector().decoded_artifacts(&event)?;
+        let inspector = self.inspector();
+        let decoded = inspector.decoded_artifacts(&event)?;
+        let presentations = inspector.artifact_presentations(&event, 200)?;
         let lines = decoded
             .into_iter()
-            .map(|value| {
+            .zip(presentations)
+            .enumerate()
+            .map(|(index, (value, presentation))| {
                 format!(
-                    "artifact={} kind={:?} preview={}",
+                    "index={} artifact={} kind={:?} bytes={} lines={} preview={}",
+                    index,
                     value.artifact_ref.artifact_id.raw(),
                     value.kind,
-                    value.preview(200)
+                    presentation.byte_len,
+                    presentation.line_count,
+                    presentation.preview
                 )
             })
             .collect::<Vec<_>>();
         Ok(CommandOutput::new(
             format!("{} artifact(s) for event {}", lines.len(), event_id.raw()),
+            lines,
+        ))
+    }
+
+    fn show_artifact_detail(&self, event_id: EventId, index: usize) -> SwatResult<CommandOutput> {
+        let event = self.lookup_event(event_id)?;
+        let inspector = self.inspector();
+        let decoded = inspector.decoded_artifacts(&event)?;
+        let presentations = inspector.artifact_presentations(&event, 200)?;
+        let Some((value, presentation)) = decoded.into_iter().zip(presentations).nth(index) else {
+            return Err(SwatError::new(format!(
+                "event {} has no artifact at index {}",
+                event_id.raw(),
+                index
+            )));
+        };
+
+        let mut lines = vec![format!(
+            "artifact={} kind={:?} bytes={} lines={}",
+            value.artifact_ref.artifact_id.raw(),
+            value.kind,
+            presentation.byte_len,
+            presentation.line_count
+        )];
+        lines.extend(
+            presentation
+                .detail
+                .lines()
+                .map(|line| format!("detail {line}")),
+        );
+        Ok(CommandOutput::new(
+            format!("artifact {} for event {}", index, event_id.raw()),
             lines,
         ))
     }
@@ -360,17 +490,23 @@ impl CommandHost {
 
     fn list_entities(&self, needle: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let entities = self.inspector().find_entities(session_id, needle)?;
+        let inspector = self.inspector();
+        let entities = inspector.find_entities(session_id, needle)?;
         Ok(CommandOutput::new(
             format!("{} entity match(es)", entities.len()),
             entities
                 .into_iter()
-                .map(|entity| {
+                .map(|value| {
+                    let relation_count = inspector
+                        .related_entities(session_id, &value.entity)
+                        .map(|relations| relations.len())
+                        .unwrap_or(0);
                     format!(
-                        "kind={:?} name={} events={}",
-                        entity.entity.kind,
-                        entity.entity.name,
-                        entity.event_ids.len()
+                        "kind={:?} name={} events={} relations={}",
+                        value.entity.kind,
+                        value.entity.name,
+                        value.event_ids.len(),
+                        relation_count
                     )
                 })
                 .collect(),
@@ -379,16 +515,41 @@ impl CommandHost {
 
     fn list_correlation(&self, correlation_id: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let events = self
-            .inspector()
-            .events_for_correlation(session_id, correlation_id);
+        let inspector = self.inspector();
+        let mut lines = Vec::new();
+        if let Some(group) = inspector
+            .correlation_groups(session_id)?
+            .into_iter()
+            .find(|group| group.correlation_id == correlation_id)
+        {
+            let span_ids = if group.span_ids.is_empty() {
+                "-".to_string()
+            } else {
+                group.span_ids.join(",")
+            };
+            let boundary_ids = if group.boundary_ids.is_empty() {
+                "-".to_string()
+            } else {
+                group
+                    .boundary_ids
+                    .iter()
+                    .map(|boundary_id| boundary_id.raw().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            lines.push(format!("span_ids={span_ids}"));
+            lines.push(format!("boundary_ids={boundary_ids}"));
+            lines.push(format!("entity_count={}", group.entities.len()));
+        }
+        let events = inspector.events_for_correlation(session_id, correlation_id);
+        lines.extend(events.iter().map(format_event_line));
         Ok(CommandOutput::new(
             format!(
                 "{} event(s) for correlation {}",
                 events.len(),
                 correlation_id
             ),
-            events.iter().map(format_event_line).collect(),
+            lines,
         ))
     }
 
@@ -399,18 +560,43 @@ impl CommandHost {
                 .triggers()
                 .iter()
                 .map(|trigger| {
-                    let expr = self
+                    let (expr, actions) = self
                         .trigger_specs
                         .get(&trigger.trigger_id)
-                        .map(|spec| format!(" expr={:?}", spec.expr))
-                        .unwrap_or_default();
+                        .map(|spec| {
+                            (
+                                format!(" expr={:?}", spec.expr),
+                                format_persisted_trigger_actions(&spec.actions),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            (
+                                String::new(),
+                                format_persisted_trigger_actions(
+                                    &trigger
+                                        .actions
+                                        .iter()
+                                        .map(PersistedTriggerAction::from_runtime_action)
+                                        .collect::<Vec<_>>(),
+                                ),
+                            )
+                        });
                     format!(
-                        "trigger={} name={} fire_once={} enabled={} actions={}{}",
+                        "trigger={} name={} fire_once={} enabled={} hits={} last_event={} last_seq={} actions={}{}",
                         trigger.trigger_id.raw(),
                         trigger.name,
                         trigger.fire_once,
                         trigger.enabled,
-                        trigger.actions.len(),
+                        trigger.hit_count,
+                        trigger
+                            .last_hit_event_id
+                            .map(|event_id| event_id.raw().to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        trigger
+                            .last_hit_sequence_no
+                            .map(|sequence_no| sequence_no.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        actions,
                         expr
                     )
                 })
@@ -424,45 +610,96 @@ impl CommandHost {
         expr: &str,
         fire_once: bool,
     ) -> SwatResult<CommandOutput> {
-        let parsed = parse_expression(expr)?;
-        let mut trigger = Trigger::new(
-            name,
-            swat_control::TriggerPredicate::Expr(parsed),
-            vec![TriggerAction::PauseTarget],
-        );
-        if fire_once {
-            trigger = trigger.fire_once();
-        }
-        let trigger_id = trigger.trigger_id;
-        self.trigger_engine.add_trigger(trigger);
-        self.trigger_specs.insert(
-            trigger_id,
-            PersistedTriggerSpec {
-                name: name.to_string(),
-                expr: expr.to_string(),
-                fire_once,
-            },
-        );
-        Ok(CommandOutput::new(
-            format!("added trigger {}", trigger_id.raw()),
-            vec![format!(
-                "trigger={} name={} fire_once={} action=PauseTarget",
-                trigger_id.raw(),
-                name,
-                fire_once
-            )],
-        ))
+        self.add_trigger_spec(PersistedTriggerSpec {
+            name: name.to_string(),
+            expr: expr.to_string(),
+            fire_once,
+            enabled: true,
+            actions: default_persisted_trigger_actions(),
+        })
+    }
+
+    fn add_snapshot_trigger(
+        &mut self,
+        name: &str,
+        expr: &str,
+        reason: &str,
+    ) -> SwatResult<CommandOutput> {
+        self.add_trigger_spec(PersistedTriggerSpec {
+            name: name.to_string(),
+            expr: expr.to_string(),
+            fire_once: false,
+            enabled: true,
+            actions: vec![PersistedTriggerAction::CreateSnapshot {
+                reason: reason.to_string(),
+            }],
+        })
     }
 
     fn remove_trigger(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
-        let removed = self
-            .trigger_engine
-            .remove_trigger(trigger_id)
-            .ok_or_else(|| SwatError::new(format!("unknown trigger {}", trigger_id.raw())))?;
+        let session_id = self.require_session()?;
+        let report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.remove_trigger(session_id, trigger_id)?
+        };
         self.trigger_specs.remove(&trigger_id);
         Ok(CommandOutput::new(
             format!("removed trigger {}", trigger_id.raw()),
-            vec![format!("name={}", removed.name)],
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!("name={}", report.value.name)))
+                .collect(),
+        ))
+    }
+
+    fn set_trigger_enabled(
+        &mut self,
+        trigger_id: TriggerId,
+        enabled: bool,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.set_trigger_enabled(session_id, trigger_id, enabled)?
+        };
+        let previous = report.value;
+        if let Some(spec) = self.trigger_specs.get_mut(&trigger_id) {
+            spec.enabled = enabled;
+        }
+        let trigger = self
+            .trigger_engine
+            .triggers()
+            .iter()
+            .find(|trigger| trigger.trigger_id == trigger_id)
+            .ok_or_else(|| SwatError::new(format!("unknown trigger {}", trigger_id.raw())))?;
+        let summary = if enabled {
+            format!("enabled trigger {}", trigger_id.raw())
+        } else {
+            format!("disabled trigger {}", trigger_id.raw())
+        };
+        Ok(CommandOutput::new(
+            summary,
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "name={} previous_enabled={} enabled={}",
+                    trigger.name, previous, enabled
+                )))
+                .collect(),
         ))
     }
 
@@ -493,7 +730,9 @@ impl CommandHost {
         let file: PersistedTriggerFile = serde_json::from_slice(&bytes).map_err(|err| {
             SwatError::new(format!("failed to decode trigger file '{}': {err}", path))
         })?;
-        if file.format_version != TRIGGER_FILE_FORMAT_VERSION {
+        if file.format_version != LEGACY_TRIGGER_FILE_FORMAT_VERSION
+            && file.format_version != TRIGGER_FILE_FORMAT_VERSION
+        {
             return Err(SwatError::new(format!(
                 "unsupported trigger file format version {}",
                 file.format_version
@@ -504,30 +743,256 @@ impl CommandHost {
         self.trigger_specs.clear();
 
         let mut lines = Vec::new();
+        let mut loaded_count = 0usize;
         for spec in file.triggers {
-            let parsed = parse_expression(&spec.expr)?;
-            let mut trigger = Trigger::new(
-                &spec.name,
-                swat_control::TriggerPredicate::Expr(parsed),
-                vec![TriggerAction::PauseTarget],
-            );
-            if spec.fire_once {
-                trigger = trigger.fire_once();
-            }
+            let trigger = build_trigger_from_spec(&spec)?;
             let trigger_id = trigger.trigger_id;
-            self.trigger_engine.add_trigger(trigger);
+            if let Some(session_id) = self.session_id {
+                let report = {
+                    let mut api = LiveSessionApi::new(
+                        &mut self.manager,
+                        self.adapter.as_mut(),
+                        self.store.as_mut(),
+                        &mut self.trigger_engine,
+                    );
+                    api.add_trigger(session_id, trigger)?
+                };
+                lines.extend(report.policy_events.iter().map(format_event_line));
+            } else {
+                self.trigger_engine.add_trigger(trigger);
+            }
             self.trigger_specs.insert(trigger_id, spec.clone());
             lines.push(format!(
-                "trigger={} name={} fire_once={} expr={:?}",
+                "trigger={} name={} fire_once={} enabled={} actions={} expr={:?}",
                 trigger_id.raw(),
                 spec.name,
                 spec.fire_once,
+                spec.enabled,
+                format_persisted_trigger_actions(&spec.actions),
                 spec.expr
             ));
+            loaded_count += 1;
         }
 
         Ok(CommandOutput::new(
-            format!("loaded {} trigger(s)", lines.len()),
+            format!("loaded {} trigger(s)", loaded_count),
+            lines,
+        ))
+    }
+
+    fn until_expr(&mut self, expr: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let session = self
+            .manager
+            .session(session_id)
+            .ok_or_else(|| SwatError::new("active session is missing from the session manager"))?;
+        if !session.capabilities.can_resume {
+            return Err(SwatError::new(
+                "active target cannot resume execution, so 'until' is unavailable",
+            ));
+        }
+
+        let parsed = parse_expression(expr)?;
+        let until_name = format!("until {:?}", expr);
+        let until_trigger = Trigger::new(
+            until_name,
+            swat_control::TriggerPredicate::Expr(parsed),
+            vec![TriggerAction::PauseTarget],
+        )
+        .fire_once();
+        let until_trigger_id = until_trigger.trigger_id;
+
+        let mut lines = Vec::new();
+        let mut pump_count = 0usize;
+
+        let add_report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.add_trigger(session_id, until_trigger)?
+        };
+        lines.extend(add_report.policy_events.iter().map(format_event_line));
+
+        let resume_report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.control(session_id, ControlAction::Resume)?
+        };
+        lines.extend(resume_report.policy_events.iter().map(format_event_line));
+        let resume_report = resume_report.value;
+        lines.extend(resume_report.stored_events.iter().map(format_event_line));
+        lines.push(format!(
+            "control accepted={} summary={}",
+            resume_report.response.accepted, resume_report.response.summary
+        ));
+        if !resume_report.response.accepted {
+            let _ = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.remove_trigger(session_id, until_trigger_id)
+            };
+            return Ok(CommandOutput::new(
+                format!(
+                    "until could not resume target: {}",
+                    resume_report.response.summary
+                ),
+                lines,
+            ));
+        }
+
+        let matched = loop {
+            let report = pump_with_triggers(
+                &mut self.manager,
+                session_id,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            )?;
+            pump_count += 1;
+
+            let matched = report
+                .trigger_matches
+                .iter()
+                .any(|trigger_match| trigger_match.trigger_id == until_trigger_id);
+            let exited = report
+                .pump_report
+                .stored_events
+                .iter()
+                .any(event_looks_like_target_exit);
+            lines.extend(format_controlled_pump_lines(&report));
+
+            if matched {
+                break true;
+            }
+            if exited {
+                break false;
+            }
+
+            if report_paused_target(&report) {
+                let resume_report = {
+                    let mut api = LiveSessionApi::new(
+                        &mut self.manager,
+                        self.adapter.as_mut(),
+                        self.store.as_mut(),
+                        &mut self.trigger_engine,
+                    );
+                    api.control(session_id, ControlAction::Resume)?
+                };
+                lines.extend(resume_report.policy_events.iter().map(format_event_line));
+                let resume_report = resume_report.value;
+                lines.extend(resume_report.stored_events.iter().map(format_event_line));
+                lines.push(format!(
+                    "control accepted={} summary={}",
+                    resume_report.response.accepted, resume_report.response.summary
+                ));
+                if !resume_report.response.accepted {
+                    let _ = {
+                        let mut api = LiveSessionApi::new(
+                            &mut self.manager,
+                            self.adapter.as_mut(),
+                            self.store.as_mut(),
+                            &mut self.trigger_engine,
+                        );
+                        api.remove_trigger(session_id, until_trigger_id)
+                    };
+                    return Ok(CommandOutput::new(
+                        format!(
+                            "until stopped because the target could not resume: {}",
+                            resume_report.response.summary
+                        ),
+                        lines,
+                    ));
+                }
+            }
+
+            if report.pump_report.stored_events.is_empty() {
+                thread::sleep(UNTIL_POLL_DELAY);
+            }
+        };
+
+        let _ = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.remove_trigger(session_id, until_trigger_id)
+        };
+
+        let summary = if matched {
+            format!("until matched after {pump_count} pump(s)")
+        } else {
+            format!("until stopped after target exit without a match after {pump_count} pump(s)")
+        };
+        Ok(CommandOutput::new(summary, lines))
+    }
+
+    fn replay(&mut self, selector_id: u64) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let snapshot_id = SnapshotId::from_raw(selector_id);
+        let (label, plan) = if inspector.snapshot_by_id(snapshot_id).is_some() {
+            (
+                format!("snapshot {}", snapshot_id.raw()),
+                inspector
+                    .replay_plan_for_snapshot(snapshot_id)
+                    .unwrap_or_default(),
+            )
+        } else {
+            let boundary_id = BoundaryId::from_raw(selector_id);
+            (
+                format!("boundary {}", boundary_id.raw()),
+                inspector.replay_plan_for_boundary(session_id, boundary_id),
+            )
+        };
+
+        let mut lines = format_replay_plan_lines(&plan);
+        if plan.is_empty() {
+            return Ok(CommandOutput::new(
+                format!("no replay directives available for {label}"),
+                lines,
+            ));
+        }
+
+        let session = self
+            .manager
+            .session(session_id)
+            .ok_or_else(|| SwatError::new("active session is missing from the session manager"))?;
+        if !session.capabilities.can_inject_replay {
+            return Ok(CommandOutput::new(
+                format!("replay preview available for {label}, but target cannot inject replay"),
+                lines,
+            ));
+        }
+
+        let report = {
+            let mut api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.apply_replay_plan(session_id, &plan)?
+        };
+        lines.splice(0..0, report.policy_events.iter().map(format_event_line));
+        lines.extend(report.value.stored_events.iter().map(format_event_line));
+        Ok(CommandOutput::new(
+            format!(
+                "applied {} replay directive(s) from {label}",
+                report.value.directives_applied
+            ),
             lines,
         ))
     }
@@ -571,29 +1036,49 @@ impl CommandHost {
         after: usize,
     ) -> SwatResult<CommandOutput> {
         let event = self.lookup_event(event_id)?;
-        let snippet = self
-            .inspector()
-            .resolve_source(&event, before, after)?
-            .ok_or_else(|| {
-                SwatError::new(format!(
-                    "no source snippet available for event {}",
-                    event_id.raw()
-                ))
-            })?;
-        let lines = snippet
-            .lines
-            .iter()
-            .map(|line| {
+        let inspection = self.inspector().source_inspection(&event, before, after)?;
+        let Some(location) = inspection.location.clone() else {
+            return Ok(CommandOutput::new(
+                format!("no source metadata for event {}", event_id.raw()),
+                Vec::new(),
+            ));
+        };
+
+        let mut lines = vec![
+            format!("file={}", location.file),
+            format!("line={}", location.line),
+            format!(
+                "function={}",
+                location.function.unwrap_or_else(|| "-".to_string())
+            ),
+        ];
+
+        if let Some(snippet) = inspection.snippet {
+            lines.extend(snippet.lines.iter().map(|line| {
                 let marker = if line.line_number == snippet.focus_line {
                     '>'
                 } else {
                     ' '
                 };
                 format!("{marker} {:>4} {}", line.line_number, line.text)
-            })
-            .collect::<Vec<_>>();
+            }));
+            return Ok(CommandOutput::new(
+                format!("source {}:{}", snippet.location.file, snippet.location.line),
+                lines,
+            ));
+        }
+
+        if let Some(failure) = inspection.failure {
+            lines.push(format!("failure_kind={:?}", failure.kind));
+            lines.push(format!("failure={}", failure.message));
+            return Ok(CommandOutput::new(
+                format!("source unresolved for event {}", event_id.raw()),
+                lines,
+            ));
+        }
+
         Ok(CommandOutput::new(
-            format!("source {}:{}", snippet.location.file, snippet.location.line),
+            format!("source metadata for event {}", event_id.raw()),
             lines,
         ))
     }
@@ -630,12 +1115,17 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         return Err(SwatError::new("command is empty"));
     }
     if trimmed == "help" {
-        return Ok(Command::Help);
+        return Ok(Command::Help { topic: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("help ") {
+        return Ok(Command::Help {
+            topic: Some(rest.trim().to_string()),
+        });
     }
     if trimmed == "attach" {
         return Ok(Command::Attach);
     }
-    if trimmed == "session" {
+    if matches!(trimmed, "session" | "status") {
         return Ok(Command::Session);
     }
     if trimmed == "pump" {
@@ -653,6 +1143,14 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(reason) = trimmed.strip_prefix("snapshot ") {
         return Ok(Command::Snapshot {
             reason: reason.trim().to_string(),
+        });
+    }
+    if trimmed == "snapshots" {
+        return Ok(Command::Snapshots);
+    }
+    if let Some(rest) = trimmed.strip_prefix("snapshot-show ") {
+        return Ok(Command::SnapshotShow {
+            snapshot_id: SnapshotId::from_raw(parse_u64(rest.trim(), "snapshot id")?),
         });
     }
     if let Some(rest) = trimmed.strip_prefix("events") {
@@ -673,6 +1171,21 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(rest) = trimmed.strip_prefix("artifacts ") {
         return Ok(Command::Artifacts {
             event_id: EventId::from_raw(parse_u64(rest.trim(), "event id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("artifact-show ") {
+        let mut parts = rest.split_whitespace();
+        let event_id = parts
+            .next()
+            .ok_or_else(|| SwatError::new("artifact-show requires an event id"))?;
+        let index = parts
+            .next()
+            .map(|value| parse_usize(value, "artifact index"))
+            .transpose()?
+            .unwrap_or(0);
+        return Ok(Command::ArtifactShow {
+            event_id: EventId::from_raw(parse_u64(event_id, "event id")?),
+            index,
         });
     }
     if let Some(rest) = trimmed.strip_prefix("query ") {
@@ -699,6 +1212,19 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(rest) = trimmed.strip_prefix("trigger-expr ") {
         return parse_trigger_expr(rest, false);
     }
+    if let Some(rest) = trimmed.strip_prefix("trigger-snapshot ") {
+        return parse_trigger_snapshot(rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("trigger-enable ") {
+        return Ok(Command::TriggerEnable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "trigger id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("trigger-disable ") {
+        return Ok(Command::TriggerDisable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "trigger id")?),
+        });
+    }
     if let Some(rest) = trimmed.strip_prefix("trigger-save ") {
         return parse_trigger_path(rest, "trigger-save").map(|path| Command::TriggerSave { path });
     }
@@ -708,6 +1234,20 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(rest) = trimmed.strip_prefix("trigger-remove ") {
         return Ok(Command::TriggerRemove {
             trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "trigger id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("until ") {
+        let expr = rest.trim();
+        if expr.is_empty() {
+            return Err(SwatError::new("until requires a non-empty expression"));
+        }
+        return Ok(Command::Until {
+            expr: expr.to_string(),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("replay ") {
+        return Ok(Command::Replay {
+            selector_id: parse_u64(rest.trim(), "snapshot or boundary id")?,
         });
     }
     if trimmed == "spans" {
@@ -768,6 +1308,43 @@ fn parse_trigger_expr(rest: &str, fire_once: bool) -> SwatResult<Command> {
     })
 }
 
+fn parse_trigger_snapshot(rest: &str) -> SwatResult<Command> {
+    let trimmed = rest.trim();
+    let Some((name, tail)) = trimmed.split_once(char::is_whitespace) else {
+        return Err(SwatError::new(
+            "trigger-snapshot requires a name, expression, and reason",
+        ));
+    };
+    let tail = tail.trim();
+    if tail.is_empty() {
+        return Err(SwatError::new(
+            "trigger-snapshot requires a name, expression, and reason",
+        ));
+    }
+
+    for (index, ch) in tail.char_indices().rev() {
+        if !ch.is_whitespace() {
+            continue;
+        }
+        let expr = tail[..index].trim_end();
+        let reason = tail[index..].trim_start();
+        if expr.is_empty() || reason.is_empty() {
+            continue;
+        }
+        if parse_expression(expr).is_ok() {
+            return Ok(Command::TriggerSnapshot {
+                name: name.to_string(),
+                expr: expr.to_string(),
+                reason: reason.to_string(),
+            });
+        }
+    }
+
+    Err(SwatError::new(
+        "trigger-snapshot requires a valid expression followed by a reason",
+    ))
+}
+
 fn parse_trigger_path(rest: &str, command: &str) -> SwatResult<String> {
     let path = rest.trim();
     if path.is_empty() {
@@ -807,6 +1384,54 @@ fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
     }
 }
 
+fn render_help(topic: Option<&str>) -> CommandOutput {
+    match topic.unwrap_or("").trim() {
+        "" => CommandOutput::new(
+            "available commands",
+            vec![
+                "session: attach | session | status | pump | pause | resume | step".to_string(),
+                "snapshots: snapshot <reason> | snapshots | snapshot-show <snapshot_id> | replay <snapshot_id|boundary_id>".to_string(),
+                "inspection: events [EventKind] | event <event_id> | artifacts <event_id> | artifact-show <event_id> [index] | source <event_id> [before] [after]".to_string(),
+                "queries: query <expr> | entities <needle> | correlation <id> | spans | span <boundary_id>".to_string(),
+                "triggers: triggers | trigger-expr <name> <expr> | trigger-expr-once <name> <expr> | trigger-snapshot <name> <expr> <reason> | trigger-enable <id> | trigger-disable <id> | trigger-save <path> | trigger-load <path> | trigger-remove <id> | until <expr>".to_string(),
+                "automation: script <rhai>".to_string(),
+                "examples: help query | help artifacts | help triggers".to_string(),
+            ],
+        ),
+        "query" | "queries" => CommandOutput::new(
+            "help query",
+            vec![
+                r#"query <expr>"#.to_string(),
+                r#"fields: kind, event.id, sequence, correlation, boundary, span, value.key, source.file, source.function, summary, artifact.text, artifact.json"#.to_string(),
+                r#"operators: ==, contains, exists, and, or, not"#.to_string(),
+                r#"example: query kind == ModelBoundary and correlation == "req-7""#.to_string(),
+                r#"example: query not source.file exists and summary contains "attached""#.to_string(),
+            ],
+        ),
+        "artifact" | "artifacts" => CommandOutput::new(
+            "help artifacts",
+            vec![
+                "artifacts <event_id>        list artifact previews with byte and line counts".to_string(),
+                "artifact-show <event_id>    show the full rendered artifact detail".to_string(),
+                "artifact-show <event_id> 1  show the second artifact for the event".to_string(),
+            ],
+        ),
+        "trigger" | "triggers" => CommandOutput::new(
+            "help triggers",
+            vec![
+                "trigger-expr <name> <expr>         add a persistent pause trigger".to_string(),
+                "trigger-expr-once <name> <expr>    add a fire-once pause trigger".to_string(),
+                "trigger-snapshot <name> <expr> <reason>  add a snapshot trigger".to_string(),
+                "until <expr>                       resume until an expression matches".to_string(),
+            ],
+        ),
+        other => CommandOutput::new(
+            format!("unknown help topic {other}"),
+            vec!["topics: query, artifacts, triggers".to_string()],
+        ),
+    }
+}
+
 fn format_event_line(event: &EventEnvelope) -> String {
     format!(
         "event={} seq={} kind={:?} summary={}",
@@ -826,7 +1451,62 @@ fn format_trigger_match(trigger_match: &TriggerMatch) -> String {
     )
 }
 
-const TRIGGER_FILE_FORMAT_VERSION: u32 = 1;
+fn format_controlled_pump_lines(report: &swat_control::ControlledPumpReport) -> Vec<String> {
+    let mut lines = report
+        .pump_report
+        .stored_events
+        .iter()
+        .map(format_event_line)
+        .collect::<Vec<_>>();
+    lines.extend(report.trigger_events.iter().map(format_event_line));
+    lines.extend(report.trigger_matches.iter().map(format_trigger_match));
+    for control_report in &report.control_reports {
+        lines.extend(control_report.stored_events.iter().map(format_event_line));
+        lines.push(format!(
+            "control accepted={} summary={}",
+            control_report.response.accepted, control_report.response.summary
+        ));
+    }
+    lines
+}
+
+fn format_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {
+    plan.directives()
+        .map(|directive| {
+            format!(
+                "boundary={} artifact={}",
+                directive.boundary_id.raw(),
+                directive.artifact_ref.artifact_id.raw()
+            )
+        })
+        .collect()
+}
+
+fn event_looks_like_target_exit(event: &EventEnvelope) -> bool {
+    matches!(
+        &event.payload,
+        EventPayload::Text { summary }
+            if event.kind == EventKind::Lifecycle && summary.contains("exited")
+    )
+}
+
+fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
+    report.control_reports.iter().any(|control_report| {
+        control_report.stored_events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::Control {
+                    action: ControlAction::Pause,
+                    ..
+                }
+            )
+        })
+    })
+}
+
+const LEGACY_TRIGGER_FILE_FORMAT_VERSION: u32 = 1;
+const TRIGGER_FILE_FORMAT_VERSION: u32 = 2;
+const UNTIL_POLL_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedTriggerFile {
@@ -835,10 +1515,81 @@ struct PersistedTriggerFile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PersistedTriggerAction {
+    PauseTarget,
+    CreateSnapshot { reason: String },
+}
+
+impl PersistedTriggerAction {
+    fn to_runtime_action(&self) -> TriggerAction {
+        match self {
+            Self::PauseTarget => TriggerAction::PauseTarget,
+            Self::CreateSnapshot { reason } => TriggerAction::CreateSnapshot {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    fn from_runtime_action(action: &TriggerAction) -> Self {
+        match action {
+            TriggerAction::PauseTarget => Self::PauseTarget,
+            TriggerAction::CreateSnapshot { reason } => Self::CreateSnapshot {
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedTriggerSpec {
     name: String,
     expr: String,
     fire_once: bool,
+    #[serde(default = "default_trigger_enabled")]
+    enabled: bool,
+    #[serde(default = "default_persisted_trigger_actions")]
+    actions: Vec<PersistedTriggerAction>,
+}
+
+fn default_trigger_enabled() -> bool {
+    true
+}
+
+fn default_persisted_trigger_actions() -> Vec<PersistedTriggerAction> {
+    vec![PersistedTriggerAction::PauseTarget]
+}
+
+fn build_trigger_from_spec(spec: &PersistedTriggerSpec) -> SwatResult<Trigger> {
+    let parsed = parse_expression(&spec.expr)?;
+    let mut trigger = Trigger::new(
+        &spec.name,
+        swat_control::TriggerPredicate::Expr(parsed),
+        spec.actions
+            .iter()
+            .map(PersistedTriggerAction::to_runtime_action)
+            .collect(),
+    );
+    if spec.fire_once {
+        trigger = trigger.fire_once();
+    }
+    if !spec.enabled {
+        trigger = trigger.disabled();
+    }
+    Ok(trigger)
+}
+
+fn format_persisted_trigger_actions(actions: &[PersistedTriggerAction]) -> String {
+    actions
+        .iter()
+        .map(|action| match action {
+            PersistedTriggerAction::PauseTarget => "PauseTarget".to_string(),
+            PersistedTriggerAction::CreateSnapshot { reason } => {
+                format!("CreateSnapshot({reason:?})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn payload_summary(event: &EventEnvelope) -> Option<&str> {
@@ -851,5 +1602,49 @@ fn payload_summary(event: &EventEnvelope) -> Option<&str> {
         | EventPayload::Trigger { summary, .. }
         | EventPayload::Value { summary, .. }
         | EventPayload::Policy { summary, .. } => Some(summary.as_str()),
+    }
+}
+
+impl CommandHost {
+    fn add_trigger_spec(&mut self, spec: PersistedTriggerSpec) -> SwatResult<CommandOutput> {
+        let trigger = build_trigger_from_spec(&spec)?;
+        let trigger_id = trigger.trigger_id;
+        let actions = format_persisted_trigger_actions(&spec.actions);
+        let policy_lines = if let Some(session_id) = self.session_id {
+            let report = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.add_trigger(session_id, trigger)?
+            };
+            debug_assert_eq!(report.value, trigger_id);
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .collect::<Vec<_>>()
+        } else {
+            self.trigger_engine.add_trigger(trigger);
+            Vec::new()
+        };
+        self.trigger_specs.insert(trigger_id, spec.clone());
+        Ok(CommandOutput::new(
+            format!("added trigger {}", trigger_id.raw()),
+            policy_lines
+                .into_iter()
+                .chain(std::iter::once(format!(
+                    "trigger={} name={} fire_once={} enabled={} actions={} expr={:?}",
+                    trigger_id.raw(),
+                    spec.name,
+                    spec.fire_once,
+                    spec.enabled,
+                    actions,
+                    spec.expr
+                )))
+                .collect(),
+        ))
     }
 }

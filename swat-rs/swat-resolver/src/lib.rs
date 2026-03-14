@@ -41,10 +41,28 @@ pub struct BoundarySpan {
     pub event_ids: Vec<EventId>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityRelation {
+    pub left: EntityRef,
+    pub right: EntityRef,
+    pub event_ids: Vec<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CorrelationGroup {
+    pub correlation_id: String,
+    pub event_ids: Vec<EventId>,
+    pub boundary_ids: Vec<BoundaryId>,
+    pub span_ids: Vec<String>,
+    pub entities: Vec<EntityRef>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct TraceIndex {
     pub entities: Vec<ResolvedEntity>,
     pub boundary_spans: Vec<BoundarySpan>,
+    pub relations: Vec<EntityRelation>,
+    pub correlation_groups: Vec<CorrelationGroup>,
 }
 
 pub struct TraceResolver<'a, S: SwatStore + ?Sized> {
@@ -59,13 +77,48 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
     pub fn index_session(&self, session_id: SessionId) -> SwatResult<TraceIndex> {
         let mut entity_map: BTreeMap<EntityRef, Vec<EventId>> = BTreeMap::new();
         let mut boundary_map: BTreeMap<BoundaryId, Vec<EventId>> = BTreeMap::new();
+        let mut relation_map: BTreeMap<(EntityRef, EntityRef), Vec<EventId>> = BTreeMap::new();
+        let mut correlation_groups: BTreeMap<String, CorrelationGroupBuilder> = BTreeMap::new();
 
         for event in self.store.events_for_session(session_id) {
-            for entity in self.event_entities(&event)? {
-                push_event_id(entity_map.entry(entity).or_default(), event.event_id);
+            let entities = self.event_entities(&event)?;
+            for entity in &entities {
+                push_event_id(
+                    entity_map.entry(entity.clone()).or_default(),
+                    event.event_id,
+                );
             }
-            if let EventPayload::Boundary { boundary_id, .. } = event.payload {
-                push_event_id(boundary_map.entry(boundary_id).or_default(), event.event_id);
+            if let EventPayload::Boundary { boundary_id, .. } = &event.payload {
+                push_event_id(
+                    boundary_map.entry(*boundary_id).or_default(),
+                    event.event_id,
+                );
+            }
+
+            for (index, left) in entities.iter().enumerate() {
+                for right in entities.iter().skip(index + 1) {
+                    let key = ordered_pair(left.clone(), right.clone());
+                    push_event_id(relation_map.entry(key).or_default(), event.event_id);
+                }
+            }
+
+            for correlation in entities
+                .iter()
+                .filter(|entity| entity.kind == ResolvedEntityKind::CorrelationId)
+            {
+                let group = correlation_groups
+                    .entry(correlation.name.clone())
+                    .or_insert_with(CorrelationGroupBuilder::default);
+                push_event_id(&mut group.event_ids, event.event_id);
+                if let EventPayload::Boundary { boundary_id, .. } = &event.payload {
+                    group.boundary_ids.insert(*boundary_id);
+                }
+                for entity in &entities {
+                    group.entities.insert(entity.clone());
+                    if entity.kind == ResolvedEntityKind::SpanId {
+                        group.span_ids.insert(entity.name.clone());
+                    }
+                }
             }
         }
 
@@ -80,10 +133,30 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
                 event_ids,
             })
             .collect();
+        let relations = relation_map
+            .into_iter()
+            .map(|((left, right), event_ids)| EntityRelation {
+                left,
+                right,
+                event_ids,
+            })
+            .collect();
+        let correlation_groups = correlation_groups
+            .into_iter()
+            .map(|(correlation_id, group)| CorrelationGroup {
+                correlation_id,
+                event_ids: group.event_ids,
+                boundary_ids: group.boundary_ids.into_iter().collect(),
+                span_ids: group.span_ids.into_iter().collect(),
+                entities: group.entities.into_iter().collect(),
+            })
+            .collect();
 
         Ok(TraceIndex {
             entities,
             boundary_spans,
+            relations,
+            correlation_groups,
         })
     }
 
@@ -235,6 +308,68 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
             .collect())
     }
 
+    pub fn entity_relations(&self, session_id: SessionId) -> SwatResult<Vec<EntityRelation>> {
+        Ok(self.index_session(session_id)?.relations)
+    }
+
+    pub fn related_entities(
+        &self,
+        session_id: SessionId,
+        entity: &EntityRef,
+    ) -> SwatResult<Vec<EntityRelation>> {
+        Ok(self
+            .entity_relations(session_id)?
+            .into_iter()
+            .filter(|relation| relation.left == *entity || relation.right == *entity)
+            .collect())
+    }
+
+    pub fn correlation_groups(&self, session_id: SessionId) -> SwatResult<Vec<CorrelationGroup>> {
+        Ok(self.index_session(session_id)?.correlation_groups)
+    }
+
+    pub fn events_for_span(
+        &self,
+        session_id: SessionId,
+        span_id: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::SpanId,
+                name: span_id.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_value_key(
+        &self,
+        session_id: SessionId,
+        value_key: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::ValueKey,
+                name: value_key.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_source_file(
+        &self,
+        session_id: SessionId,
+        file: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::SourceFile,
+                name: file.to_string(),
+            },
+        )
+    }
+
     pub fn events_by_kind(&self, session_id: SessionId, kind: EventKind) -> Vec<EventEnvelope> {
         self.store
             .events_for_session(session_id)
@@ -247,5 +382,21 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
 fn push_event_id(event_ids: &mut Vec<EventId>, event_id: EventId) {
     if event_ids.last().copied() != Some(event_id) {
         event_ids.push(event_id);
+    }
+}
+
+#[derive(Default)]
+struct CorrelationGroupBuilder {
+    event_ids: Vec<EventId>,
+    boundary_ids: BTreeSet<BoundaryId>,
+    span_ids: BTreeSet<String>,
+    entities: BTreeSet<EntityRef>,
+}
+
+fn ordered_pair(left: EntityRef, right: EntityRef) -> (EntityRef, EntityRef) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
     }
 }

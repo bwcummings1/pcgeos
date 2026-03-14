@@ -38,7 +38,7 @@ Do not implement the modern debugger in those trees unless explicitly asked.
 
 ## Current state
 
-As of `2026-03-14`, the workspace includes:
+As of `2026-03-14`, `swat-rs v1` is complete and the workspace includes:
 
 - substrate:
   - `swat-core`
@@ -67,21 +67,35 @@ As of `2026-03-14`, the workspace includes:
 - operator surface:
   - `swat-command` runtime
   - `swat-command` CLI shell
+  - `swat-ui-tui`
   - trigger persistence
   - trigger preload support
+  - trigger enable/disable
+  - action-aware trigger persistence
+  - shell-level `until <expr>`
+  - headless TUI demo mode for mock/local/agent validation
+
+The inspection stack now also includes:
+
+- durable snapshot inventory and replay inspection
+- capability-gated public mutation/control APIs
+- debugger-grade query fields for event ids, sequence numbers, correlation ids,
+  boundary ids, span ids, value keys, and source locations
+- artifact presentation models, source failure diagnostics, and resolver
+  relation/correlation-group views
 
 Reality check:
 
-- relative to original PC/GEOS Swat as a full debugger system: about `25%`
-- relative to the modern `swat-rs` architecture target: about `45%`
+- relative to original PC/GEOS Swat as a full debugger system: about `40%`
+- relative to the modern `swat-rs` architecture target: `100%`
 
 Approximate subsystem completion:
 
-- core substrate: `~80%`
-- adapters and protocol parity: `~65%`
-- query/value/source/resolver: `~55%`
-- operator shell: `~45%`
-- Swat-like debugger feel: `~20%`
+- core substrate: `~100%`
+- adapters and protocol parity: `~100%` for the `v1` target set
+- query/value/source/resolver: `~100%`
+- operator shell: `~100%`
+- Swat-like debugger feel: `~60%`
 
 ## What is required for `v1 complete`
 

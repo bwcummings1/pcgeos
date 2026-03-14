@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use swat_core::{
-    CapabilitySet, ControlAction, ControlResponse, EventEnvelope, ReplayMode, SessionId, SwatError,
-    SwatResult, TargetAdapter, TargetDescriptor, TargetId,
+    CapabilitySet, ControlAction, ControlResponse, EventEnvelope, EventKind, EventPayload,
+    PendingEvent, ReplayMode, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult,
+    TargetAdapter, TargetDescriptor, TargetId,
 };
 use swat_protocol::{
     Attached, CURRENT_PROTOCOL_VERSION, ControlRequest, ControlResponseEnvelope, EventBatch,
@@ -39,6 +40,7 @@ pub struct ControlReport {
     pub response: ControlResponse,
     pub messages: Vec<ProtocolMessage>,
     pub stored_events: Vec<EventEnvelope>,
+    pub snapshot: Option<SnapshotRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,32 +161,70 @@ impl SessionManager {
         store: &mut S,
     ) -> SwatResult<ControlReport> {
         let state = self.session_state_mut(session_id)?;
+        let target_id = state.descriptor.target_id;
         let request = ProtocolMessage::ControlRequest(ControlRequest {
             session_id,
-            target_id: state.descriptor.target_id,
+            target_id,
             action: action.clone(),
         });
 
-        let result = adapter.control(action)?;
-        let stored_events = store.ingest_emission(
+        let result = adapter.control(action.clone())?;
+        let mut stored_events = store.ingest_emission(
             session_id,
-            state.descriptor.target_id,
+            target_id,
             &mut state.next_sequence,
             result.emission,
         )?;
+        let mut snapshot = None;
+        if let ControlAction::CreateSnapshot { reason } = &action {
+            if result.response.accepted {
+                let snapshot_id = SnapshotId::new();
+                let snapshot_events = store.ingest_emission(
+                    session_id,
+                    target_id,
+                    &mut state.next_sequence,
+                    swat_core::AdapterEmission {
+                        pending_events: vec![PendingEvent::new(
+                            EventKind::Snapshot,
+                            EventPayload::Snapshot {
+                                snapshot_id,
+                                summary: format!("snapshot created: {reason}"),
+                            },
+                        )],
+                        pending_artifacts: Vec::new(),
+                    },
+                )?;
+                let snapshot_event = snapshot_events
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| SwatError::new("snapshot emission did not produce an event"))?;
+                let snapshot_record = SnapshotRecord {
+                    snapshot_id,
+                    session_id,
+                    target_id,
+                    created_at: snapshot_event.observed_at,
+                    reason: reason.clone(),
+                    snapshot_event_id: snapshot_event.event_id,
+                    captured_sequence_no: snapshot_event.sequence_no,
+                };
+                store.record_snapshot(snapshot_record.clone())?;
+                stored_events.extend(snapshot_events);
+                snapshot = Some(snapshot_record);
+            }
+        }
 
         let mut messages = vec![
             request,
             ProtocolMessage::ControlResponse(ControlResponseEnvelope {
                 session_id,
-                target_id: state.descriptor.target_id,
+                target_id,
                 response: result.response.clone(),
             }),
         ];
         if !stored_events.is_empty() {
             messages.push(ProtocolMessage::EventBatch(EventBatch {
                 session_id,
-                target_id: state.descriptor.target_id,
+                target_id,
                 events: stored_events.clone(),
             }));
         }
@@ -193,6 +233,7 @@ impl SessionManager {
             response: result.response,
             messages,
             stored_events,
+            snapshot,
         })
     }
 

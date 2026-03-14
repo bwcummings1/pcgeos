@@ -241,6 +241,17 @@ pub struct EventEnvelope {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRecord {
+    pub snapshot_id: SnapshotId,
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+    pub created_at: Timestamp,
+    pub reason: String,
+    pub snapshot_event_id: EventId,
+    pub captured_sequence_no: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingEvent {
     pub observed_at: Timestamp,
     pub kind: EventKind,

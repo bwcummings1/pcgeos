@@ -26,6 +26,14 @@ pub struct DecodedValue {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValuePresentation {
+    pub preview: String,
+    pub detail: String,
+    pub line_count: usize,
+    pub byte_len: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueriedValue {
     Null,
     Bool(bool),
@@ -36,12 +44,27 @@ pub enum QueriedValue {
 
 impl DecodedValue {
     pub fn preview(&self, limit: usize) -> String {
-        let rendered = match &self.data {
+        truncate(self.render_compact(), limit)
+    }
+
+    pub fn detail(&self) -> String {
+        match &self.data {
             DecodedValueData::Text(text) => text.clone(),
-            DecodedValueData::Json(value) => value.to_string(),
-            DecodedValueData::Binary(bytes) => format!("<{} bytes>", bytes.len()),
-        };
-        truncate(rendered, limit)
+            DecodedValueData::Json(value) => {
+                serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+            }
+            DecodedValueData::Binary(bytes) => render_binary(bytes),
+        }
+    }
+
+    pub fn presentation(&self, preview_limit: usize) -> ValuePresentation {
+        let detail = self.detail();
+        ValuePresentation {
+            preview: self.preview(preview_limit),
+            line_count: detail.lines().count().max(1),
+            byte_len: self.byte_len(),
+            detail,
+        }
     }
 
     pub fn query_json_path(&self, path: &str) -> SwatResult<Option<QueriedValue>> {
@@ -69,6 +92,22 @@ impl DecodedValue {
         }
 
         Ok(Some(convert_queried_value(current)))
+    }
+
+    fn render_compact(&self) -> String {
+        match &self.data {
+            DecodedValueData::Text(text) => normalize_preview_text(text),
+            DecodedValueData::Json(value) => normalize_preview_text(&value.to_string()),
+            DecodedValueData::Binary(bytes) => compact_binary_preview(bytes),
+        }
+    }
+
+    fn byte_len(&self) -> usize {
+        match &self.data {
+            DecodedValueData::Text(text) => text.len(),
+            DecodedValueData::Json(value) => value.to_string().len(),
+            DecodedValueData::Binary(bytes) => bytes.len(),
+        }
     }
 }
 
@@ -200,4 +239,44 @@ fn truncate(mut value: String, limit: usize) -> String {
         value.push_str("...");
     }
     value
+}
+
+fn normalize_preview_text(value: &str) -> String {
+    value.replace('\n', "\\n")
+}
+
+fn compact_binary_preview(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "<0 bytes>".to_string();
+    }
+
+    let preview = bytes
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if bytes.len() > 8 {
+        format!("<{} bytes: {} ...>", bytes.len(), preview)
+    } else {
+        format!("<{} bytes: {}>", bytes.len(), preview)
+    }
+}
+
+fn render_binary(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "<0 bytes>".to_string();
+    }
+
+    bytes
+        .chunks(16)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
