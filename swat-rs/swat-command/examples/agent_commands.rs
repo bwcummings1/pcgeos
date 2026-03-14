@@ -24,7 +24,7 @@ from swat_agent_protocol import LineEmitter, model, planner, tool
 
 emit = LineEmitter().emit
 
-emit(planner("draft-answer", phase="start", summary="planner started"))
+emit(planner("draft-answer", phase="start", summary="planner started", file="/tmp/runtime.py", line=12, function="run_agent"))
 emit(model("gpt-4.1-mini", phase="request", span_id="model-1", correlation_id="req-99", summary="model requested"))
 emit(tool("web_search", phase="start", span_id="tool-1", correlation_id="req-99", summary="tool started"))
 emit(tool("web_search", phase="end", span_id="tool-1", correlation_id="req-99", summary="tool completed"))
@@ -48,19 +48,21 @@ time.sleep(0.1)
     for command in [
         "attach".to_string(),
         "status".to_string(),
-        "help query".to_string(),
-        r#"trigger-expr-once pause_web kind == ToolBoundary and artifact.json $.name == "web_search""#
+        "help breakpoint".to_string(),
+        "help source".to_string(),
+        r#"breakpoint once pause_web kind == ToolBoundary and artifact.json $.name == "web_search""#
             .to_string(),
-        format!("trigger-save {trigger_path}"),
-        format!("trigger-load {trigger_path}"),
-        "triggers".to_string(),
+        format!("breakpoint save {trigger_path}"),
+        format!("breakpoint load {trigger_path}"),
+        "breakpoint list".to_string(),
         "pump".to_string(),
         "pump".to_string(),
         "pump".to_string(),
         "entities web".to_string(),
         "correlation req-99".to_string(),
         r#"query kind == ToolBoundary and artifact.json $.name == "web_search""#.to_string(),
-        "spans".to_string(),
+        "stack".to_string(),
+        "source file /tmp/runtime.py".to_string(),
         "script ctx.event_count()".to_string(),
     ] {
         let output = host.execute(&command)?;

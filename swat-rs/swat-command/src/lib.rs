@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod registry;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::thread;
@@ -16,6 +18,8 @@ use swat_expr::parse_expression;
 use swat_script::ScriptHost;
 use swat_session::SessionManager;
 use swat_store::SwatStore;
+
+pub use registry::{CommandSurface, command_help};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -98,6 +102,9 @@ pub enum Command {
         before: usize,
         after: usize,
     },
+    SourceFile {
+        file: String,
+    },
     Script {
         script: String,
     },
@@ -149,7 +156,7 @@ impl CommandHost {
 
     pub fn execute_command(&mut self, command: Command) -> SwatResult<CommandOutput> {
         match command {
-            Command::Help { topic } => Ok(render_help(topic.as_deref())),
+            Command::Help { topic } => Ok(command_help(topic.as_deref(), CommandSurface::Shell)),
             Command::Attach => self.attach_or_describe(),
             Command::Session => self.describe_session(),
             Command::Pump => self.pump_once(),
@@ -189,6 +196,7 @@ impl CommandHost {
                 before,
                 after,
             } => self.show_source(event_id, before, after),
+            Command::SourceFile { file } => self.list_source_file_events(&file),
             Command::Script { script } => self.run_script(&script),
         }
     }
@@ -999,17 +1007,28 @@ impl CommandHost {
 
     fn list_spans(&self) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let index = self.inspector().entity_index(session_id)?;
+        let inspector = self.inspector();
+        let index = inspector.entity_index(session_id)?;
         Ok(CommandOutput::new(
             format!("{} boundary span(s)", index.boundary_spans.len()),
             index
                 .boundary_spans
                 .into_iter()
                 .map(|span| {
+                    let events = inspector.boundary_span(session_id, span.boundary_id);
+                    let seq_range = match (events.first(), events.last()) {
+                        (Some(first), Some(last)) => {
+                            format!("{}..{}", first.sequence_no, last.sequence_no)
+                        }
+                        _ => "-".to_string(),
+                    };
+                    let tail = events.last().and_then(payload_summary).unwrap_or("<none>");
                     format!(
-                        "boundary={} events={}",
+                        "boundary={} events={} seq={} tail={}",
                         span.boundary_id.raw(),
-                        span.event_ids.len()
+                        span.event_ids.len(),
+                        seq_range,
+                        tail
                     )
                 })
                 .collect(),
@@ -1083,6 +1102,15 @@ impl CommandHost {
         ))
     }
 
+    fn list_source_file_events(&self, file: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let events = self.inspector().events_for_source_file(session_id, file)?;
+        Ok(CommandOutput::new(
+            format!("{} event(s) for source file {}", events.len(), file),
+            events.iter().map(format_event_line).collect(),
+        ))
+    }
+
     fn run_script(&self, script: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let mut host = ScriptHost::new(self.store.as_ref(), session_id);
@@ -1127,6 +1155,18 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     }
     if matches!(trimmed, "session" | "status") {
         return Ok(Command::Session);
+    }
+    if trimmed == "stack" || trimmed == "stack list" {
+        return Ok(Command::Spans);
+    }
+    if let Some(rest) = trimmed.strip_prefix("stack ") {
+        return parse_stack_command(rest);
+    }
+    if matches!(trimmed, "breakpoint" | "breakpoints" | "breakpoint list") {
+        return Ok(Command::Triggers);
+    }
+    if let Some(rest) = trimmed.strip_prefix("breakpoint ") {
+        return parse_breakpoint_command(rest);
     }
     if trimmed == "pump" {
         return Ok(Command::Pump);
@@ -1259,25 +1299,20 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         });
     }
     if let Some(rest) = trimmed.strip_prefix("source ") {
-        let mut parts = rest.split_whitespace();
-        let event_id = parts
-            .next()
-            .ok_or_else(|| SwatError::new("source requires an event id"))?;
-        let before = parts
-            .next()
-            .map(|value| parse_usize(value, "before context"))
-            .transpose()?
-            .unwrap_or(2);
-        let after = parts
-            .next()
-            .map(|value| parse_usize(value, "after context"))
-            .transpose()?
-            .unwrap_or(2);
-        return Ok(Command::Source {
-            event_id: EventId::from_raw(parse_u64(event_id, "event id")?),
-            before,
-            after,
-        });
+        let rest = rest.trim();
+        if let Some(rest) = rest.strip_prefix("show ") {
+            return parse_source_show(rest);
+        }
+        if let Some(rest) = rest.strip_prefix("file ") {
+            let file = rest.trim();
+            if file.is_empty() {
+                return Err(SwatError::new("source file requires a path"));
+            }
+            return Ok(Command::SourceFile {
+                file: file.to_string(),
+            });
+        }
+        return parse_source_show(rest);
     }
     if let Some(rest) = trimmed.strip_prefix("script ") {
         return Ok(Command::Script {
@@ -1286,6 +1321,96 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     }
 
     Err(SwatError::new(format!("unknown command: {trimmed}")))
+}
+
+fn parse_stack_command(rest: &str) -> SwatResult<Command> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() || trimmed == "list" {
+        return Ok(Command::Spans);
+    }
+    let boundary = trimmed
+        .strip_prefix("show ")
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    Ok(Command::Span {
+        boundary_id: BoundaryId::from_raw(parse_u64(boundary, "boundary id")?),
+    })
+}
+
+fn parse_breakpoint_command(rest: &str) -> SwatResult<Command> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() || trimmed == "list" {
+        return Ok(Command::Triggers);
+    }
+    if let Some(rest) = trimmed.strip_prefix("add ") {
+        return parse_trigger_expr(rest, false);
+    }
+    if let Some(rest) = trimmed.strip_prefix("once ") {
+        return parse_trigger_expr(rest, true);
+    }
+    if let Some(rest) = trimmed.strip_prefix("snapshot ") {
+        return parse_trigger_snapshot(rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("enable ") {
+        return Ok(Command::TriggerEnable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "breakpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("disable ") {
+        return Ok(Command::TriggerDisable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "breakpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("save ") {
+        return parse_trigger_path(rest, "breakpoint save")
+            .map(|path| Command::TriggerSave { path });
+    }
+    if let Some(rest) = trimmed.strip_prefix("load ") {
+        return parse_trigger_path(rest, "breakpoint load")
+            .map(|path| Command::TriggerLoad { path });
+    }
+    if let Some(rest) = trimmed.strip_prefix("remove ") {
+        return Ok(Command::TriggerRemove {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "breakpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("until ") {
+        let expr = rest.trim();
+        if expr.is_empty() {
+            return Err(SwatError::new(
+                "breakpoint until requires a non-empty expression",
+            ));
+        }
+        return Ok(Command::Until {
+            expr: expr.to_string(),
+        });
+    }
+
+    Err(SwatError::new(format!(
+        "unknown breakpoint command: {trimmed}"
+    )))
+}
+
+fn parse_source_show(rest: &str) -> SwatResult<Command> {
+    let mut parts = rest.split_whitespace();
+    let event_id = parts
+        .next()
+        .ok_or_else(|| SwatError::new("source requires an event id"))?;
+    let before = parts
+        .next()
+        .map(|value| parse_usize(value, "before context"))
+        .transpose()?
+        .unwrap_or(2);
+    let after = parts
+        .next()
+        .map(|value| parse_usize(value, "after context"))
+        .transpose()?
+        .unwrap_or(2);
+    Ok(Command::Source {
+        event_id: EventId::from_raw(parse_u64(event_id, "event id")?),
+        before,
+        after,
+    })
 }
 
 fn parse_trigger_expr(rest: &str, fire_once: bool) -> SwatResult<Command> {
@@ -1381,54 +1506,6 @@ fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
         "SchemaResolution" => Ok(EventKind::SchemaResolution),
         "PolicyDecision" => Ok(EventKind::PolicyDecision),
         _ => Err(SwatError::new(format!("unknown event kind '{kind}'"))),
-    }
-}
-
-fn render_help(topic: Option<&str>) -> CommandOutput {
-    match topic.unwrap_or("").trim() {
-        "" => CommandOutput::new(
-            "available commands",
-            vec![
-                "session: attach | session | status | pump | pause | resume | step".to_string(),
-                "snapshots: snapshot <reason> | snapshots | snapshot-show <snapshot_id> | replay <snapshot_id|boundary_id>".to_string(),
-                "inspection: events [EventKind] | event <event_id> | artifacts <event_id> | artifact-show <event_id> [index] | source <event_id> [before] [after]".to_string(),
-                "queries: query <expr> | entities <needle> | correlation <id> | spans | span <boundary_id>".to_string(),
-                "triggers: triggers | trigger-expr <name> <expr> | trigger-expr-once <name> <expr> | trigger-snapshot <name> <expr> <reason> | trigger-enable <id> | trigger-disable <id> | trigger-save <path> | trigger-load <path> | trigger-remove <id> | until <expr>".to_string(),
-                "automation: script <rhai>".to_string(),
-                "examples: help query | help artifacts | help triggers".to_string(),
-            ],
-        ),
-        "query" | "queries" => CommandOutput::new(
-            "help query",
-            vec![
-                r#"query <expr>"#.to_string(),
-                r#"fields: kind, event.id, sequence, correlation, boundary, span, value.key, source.file, source.function, summary, artifact.text, artifact.json"#.to_string(),
-                r#"operators: ==, contains, exists, and, or, not"#.to_string(),
-                r#"example: query kind == ModelBoundary and correlation == "req-7""#.to_string(),
-                r#"example: query not source.file exists and summary contains "attached""#.to_string(),
-            ],
-        ),
-        "artifact" | "artifacts" => CommandOutput::new(
-            "help artifacts",
-            vec![
-                "artifacts <event_id>        list artifact previews with byte and line counts".to_string(),
-                "artifact-show <event_id>    show the full rendered artifact detail".to_string(),
-                "artifact-show <event_id> 1  show the second artifact for the event".to_string(),
-            ],
-        ),
-        "trigger" | "triggers" => CommandOutput::new(
-            "help triggers",
-            vec![
-                "trigger-expr <name> <expr>         add a persistent pause trigger".to_string(),
-                "trigger-expr-once <name> <expr>    add a fire-once pause trigger".to_string(),
-                "trigger-snapshot <name> <expr> <reason>  add a snapshot trigger".to_string(),
-                "until <expr>                       resume until an expression matches".to_string(),
-            ],
-        ),
-        other => CommandOutput::new(
-            format!("unknown help topic {other}"),
-            vec!["topics: query, artifacts, triggers".to_string()],
-        ),
     }
 }
 

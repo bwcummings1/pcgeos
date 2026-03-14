@@ -861,6 +861,7 @@ dependencies = [
  "swat-adapter-local",
  "swat-adapter-mock",
  "swat-api",
+ "swat-command",
  "swat-control",
  "swat-core",
  "swat-expr",

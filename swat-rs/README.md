@@ -225,7 +225,9 @@ This crate provides a live command grammar for attach/pump/control/query/entity/
 span/source/script operations over the shared substrate.
 It now also supports trigger enable/disable, hit counters and last-hit
 metadata, action-aware trigger persistence, shell-level `until <expr>`, grouped
-help topics, status/session introspection, richer artifact rendering, source
+help topics, a shared command/help registry consumed by both shell help and
+TUI discovery, first debugger-family aliases for `stack`, `source`, and
+`breakpoint`, status/session introspection, richer artifact rendering, source
 failure reporting, and a runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_command::CommandHost;
+use swat_command::{Command, CommandHost, CommandSurface, command_help, parse_command};
 use swat_store::InMemoryStore;
 
 #[test]
@@ -56,6 +56,59 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 }
 
 #[test]
+fn command_registry_exposes_family_help_and_alias_parsing() {
+    let help = command_help(Some("breakpoint"), CommandSurface::Shell);
+    assert!(help.summary.contains("help breakpoint"));
+    assert!(
+        help.lines
+            .iter()
+            .any(|line| line.contains("breakpoint add <name> <expr>"))
+    );
+    assert!(
+        help.lines
+            .iter()
+            .any(|line| line.contains("semantic breakpoints"))
+    );
+
+    let tui_help = command_help(Some("source"), CommandSurface::Tui);
+    assert!(
+        tui_help
+            .lines
+            .iter()
+            .any(|line| line.contains("source file <path>"))
+    );
+
+    assert_eq!(parse_command("stack").unwrap(), Command::Spans);
+    assert_eq!(
+        parse_command("stack show 42").unwrap(),
+        Command::Span {
+            boundary_id: swat_core::BoundaryId::from_raw(42),
+        }
+    );
+    assert_eq!(
+        parse_command("source show 7 1 3").unwrap(),
+        Command::Source {
+            event_id: swat_core::EventId::from_raw(7),
+            before: 1,
+            after: 3,
+        }
+    );
+    assert_eq!(
+        parse_command("source file /tmp/agent.py").unwrap(),
+        Command::SourceFile {
+            file: "/tmp/agent.py".to_string(),
+        }
+    );
+    assert_eq!(parse_command("breakpoint list").unwrap(), Command::Triggers);
+    assert_eq!(
+        parse_command("breakpoint disable 9").unwrap(),
+        Command::TriggerDisable {
+            trigger_id: swat_core::TriggerId::from_raw(9),
+        }
+    );
+}
+
+#[test]
 fn command_host_can_manage_and_fire_semantic_triggers() {
     let mut host = CommandHost::new(
         Box::new(MockAdapter::default()),
@@ -66,11 +119,11 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
     host.execute("resume").unwrap();
 
     let added = host
-        .execute(r#"trigger-expr-once pause_search kind == ModelBoundary and artifact.json $.tool == "search""#)
+        .execute(r#"breakpoint once pause_search kind == ModelBoundary and artifact.json $.tool == "search""#)
         .unwrap();
     assert!(added.summary.contains("added trigger"));
 
-    let listed = host.execute("triggers").unwrap();
+    let listed = host.execute("breakpoint list").unwrap();
     assert_eq!(listed.lines.len(), 1);
     let trigger_id = listed.lines[0]
         .split_whitespace()
@@ -90,16 +143,16 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
             .iter()
             .any(|line| line.contains("control accepted=true"))
     );
-    let listed = host.execute("triggers").unwrap();
+    let listed = host.execute("breakpoint list").unwrap();
     assert!(listed.lines[0].contains("hits=1"));
     assert!(listed.lines[0].contains("last_event="));
 
     let removed = host
-        .execute(&format!("trigger-remove {trigger_id}"))
+        .execute(&format!("breakpoint remove {trigger_id}"))
         .unwrap();
     assert!(removed.summary.contains("removed trigger"));
 
-    let listed_after = host.execute("triggers").unwrap();
+    let listed_after = host.execute("breakpoint list").unwrap();
     assert_eq!(listed_after.lines.len(), 0);
 }
 
@@ -400,10 +453,20 @@ time.sleep(0.1)
 
     let correlated = host.execute("correlation req-7").unwrap();
     assert_eq!(correlated.lines.len(), 7);
-    assert!(correlated.lines.iter().any(|line| line.contains("span_ids=model-1,tool-1")));
-    assert!(correlated.lines.iter().any(|line| line.contains("entity_count=")));
+    assert!(
+        correlated
+            .lines
+            .iter()
+            .any(|line| line.contains("span_ids=model-1,tool-1"))
+    );
+    assert!(
+        correlated
+            .lines
+            .iter()
+            .any(|line| line.contains("entity_count="))
+    );
 
-    let spans = host.execute("spans").unwrap();
+    let spans = host.execute("stack").unwrap();
     assert_eq!(spans.lines.len(), 2);
     let model_boundary = spans
         .lines
@@ -413,7 +476,9 @@ time.sleep(0.1)
             Some(raw.to_string())
         })
         .unwrap();
-    let span = host.execute(&format!("span {model_boundary}")).unwrap();
+    let span = host
+        .execute(&format!("stack show {model_boundary}"))
+        .unwrap();
     assert_eq!(span.lines.len(), 2);
 
     let model_events = host.execute("events ModelBoundary").unwrap();
@@ -450,12 +515,23 @@ time.sleep(0.1)
                 .map(ToString::to_string)
         })
         .unwrap();
-    let source = host.execute(&format!("source {source_event_id}")).unwrap();
+    let source = host
+        .execute(&format!("source show {source_event_id}"))
+        .unwrap();
     assert!(source.summary.contains("source unresolved"));
     assert!(
         source
             .lines
             .iter()
             .any(|line| line.contains("failure_kind=MissingFile"))
+    );
+
+    let source_file = host.execute("source file /tmp/agent.py").unwrap();
+    assert!(source_file.summary.contains("/tmp/agent.py"));
+    assert!(
+        source_file
+            .lines
+            .iter()
+            .any(|line| line.contains("planner started"))
     );
 }

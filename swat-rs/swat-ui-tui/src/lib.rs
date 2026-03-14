@@ -20,12 +20,12 @@ use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_api::{LiveSessionApi, TraceInspector};
+use swat_command::{Command, CommandSurface, command_help, parse_command};
 use swat_control::TriggerEngine;
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
     TargetAdapter,
 };
-use swat_expr::parse_expression;
 use swat_session::SessionManager;
 use swat_store::{FileStore, InMemoryStore, SwatStore};
 
@@ -65,6 +65,7 @@ enum EventFilter {
     Query(String),
     Correlation(String),
     Boundary(BoundaryId),
+    SourceFile(String),
 }
 
 impl EventFilter {
@@ -75,25 +76,9 @@ impl EventFilter {
             Self::Query(expr) => format!("query={expr}"),
             Self::Correlation(id) => format!("correlation={id}"),
             Self::Boundary(boundary_id) => format!("boundary={}", boundary_id.raw()),
+            Self::SourceFile(file) => format!("source.file={file}"),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum TuiCommand {
-    Help,
-    Attach,
-    Pump,
-    Pause,
-    Resume,
-    Step,
-    Snapshot { reason: String },
-    Events { kind: Option<EventKind> },
-    Query { expr: String },
-    Correlation { correlation_id: String },
-    Span { boundary_id: BoundaryId },
-    Event { event_id: EventId },
-    Clear,
 }
 
 struct LiveRuntime {
@@ -182,6 +167,7 @@ impl LiveRuntime {
             EventFilter::Boundary(boundary_id) => {
                 Ok(inspector.boundary_span(session_id, *boundary_id))
             }
+            EventFilter::SourceFile(file) => inspector.events_for_source_file(session_id, file),
         }
     }
 
@@ -222,7 +208,7 @@ impl TuiApp {
             command_mode: false,
             command_input: String::new(),
             messages: VecDeque::from([
-                "q quit | : command | a attach | u pump | r resume | p pause | s step".to_string(),
+                "q quit | :help | a attach | u pump | r resume | p pause | s step".to_string(),
             ]),
         })
     }
@@ -589,73 +575,134 @@ impl TuiApp {
         if input.is_empty() {
             return Ok(());
         }
-        match parse_tui_command(input)? {
-            TuiCommand::Help => {
-                self.push_message(
-                    "commands: attach | pump | pause | resume | step | snapshot <reason> | events [kind] | query <expr> | correlation <id> | span <boundary_id> | event <event_id> | clear".to_string(),
-                );
-            }
-            TuiCommand::Attach => self.attach()?,
-            TuiCommand::Pump => {
+        if input == "clear" {
+            self.filter = EventFilter::All;
+            self.selected_event = 0;
+            self.push_message("cleared event filter".to_string());
+            self.clamp_selection()?;
+            return Ok(());
+        }
+
+        match parse_command(input)? {
+            Command::Help { topic } => self.show_help(topic.as_deref()),
+            Command::Attach => self.attach()?,
+            Command::Session => self.push_message(self.runtime.session_label()),
+            Command::Pump => {
                 let pumped = self.runtime.pump()?;
                 self.push_message(format!("manual pump captured {pumped} event(s)"));
             }
-            TuiCommand::Pause => {
+            Command::Pause => {
                 let message = self.runtime.control(ControlAction::Pause)?;
                 self.push_message(message);
             }
-            TuiCommand::Resume => {
+            Command::Resume => {
                 let message = self.runtime.control(ControlAction::Resume)?;
                 self.push_message(message);
             }
-            TuiCommand::Step => {
+            Command::Step => {
                 let message = self.runtime.control(ControlAction::Step)?;
                 self.push_message(message);
             }
-            TuiCommand::Snapshot { reason } => {
+            Command::Snapshot { reason } => {
                 let message = self
                     .runtime
                     .control(ControlAction::CreateSnapshot { reason })?;
                 self.push_message(message);
             }
-            TuiCommand::Events { kind } => {
+            Command::Events { kind } => {
                 self.filter = kind.map_or(EventFilter::All, EventFilter::Kind);
                 self.selected_event = 0;
                 self.push_message(format!("event filter={}", self.filter.label()));
             }
-            TuiCommand::Query { expr } => {
-                parse_expression(&expr)?;
+            Command::Query { expr } => {
                 self.filter = EventFilter::Query(expr.clone());
                 self.selected_event = 0;
                 self.push_message(format!("event filter=query {expr}"));
             }
-            TuiCommand::Correlation { correlation_id } => {
+            Command::Correlation { correlation_id } => {
                 self.filter = EventFilter::Correlation(correlation_id.clone());
                 self.selected_event = 0;
                 self.push_message(format!("event filter=correlation {correlation_id}"));
             }
-            TuiCommand::Span { boundary_id } => {
+            Command::Spans => {
+                for line in self.stack_lines()? {
+                    self.push_message(line);
+                }
+            }
+            Command::Span { boundary_id } => {
                 self.filter = EventFilter::Boundary(boundary_id);
                 self.selected_event = 0;
                 self.push_message(format!("event filter=boundary {}", boundary_id.raw()));
             }
-            TuiCommand::Event { event_id } => {
-                self.filter = EventFilter::All;
-                let events = self.runtime.session_events(&self.filter)?;
-                if let Some(index) = events.iter().position(|event| event.event_id == event_id) {
-                    self.selected_event = index;
-                    self.push_message(format!("selected event {}", event_id.raw()));
-                } else {
-                    self.push_message(format!("unknown event {}", event_id.raw()));
-                }
+            Command::Event { event_id } => self.select_event(event_id)?,
+            Command::Source { event_id, .. } => {
+                self.select_event(event_id)?;
+                self.push_message(format!("source event={}", event_id.raw()));
             }
-            TuiCommand::Clear => {
-                self.filter = EventFilter::All;
+            Command::SourceFile { file } => {
+                self.filter = EventFilter::SourceFile(file.clone());
                 self.selected_event = 0;
-                self.push_message("cleared event filter".to_string());
+                self.push_message(format!("event filter=source.file {file}"));
+            }
+            other => {
+                return Err(SwatError::new(format!(
+                    "unsupported tui command '{input}' ({other:?}); use ':help' for shared discovery and the shell for shell-only workflows",
+                )));
             }
         }
         self.clamp_selection()?;
+        Ok(())
+    }
+
+    fn show_help(&mut self, topic: Option<&str>) {
+        let help = command_help(topic, CommandSurface::Tui);
+        self.messages.clear();
+        self.push_message(help.summary);
+        let available = MAX_MESSAGES.saturating_sub(1);
+        if help.lines.len() <= available {
+            for line in help.lines {
+                self.push_message(line);
+            }
+            return;
+        }
+
+        let shown = available.saturating_sub(1);
+        for line in help.lines.iter().take(shown) {
+            self.push_message(line.clone());
+        }
+        self.push_message(format!(
+            "... {} more line(s)",
+            help.lines.len().saturating_sub(shown)
+        ));
+    }
+
+    fn stack_lines(&self) -> SwatResult<Vec<String>> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Ok(vec![
+                "attach a target to inspect the stack view".to_string(),
+            ]);
+        };
+        let index = self.runtime.inspector().entity_index(session_id)?;
+        let mut lines = vec![format!("stack spans={}", index.boundary_spans.len())];
+        lines.extend(index.boundary_spans.into_iter().take(6).map(|span| {
+            format!(
+                "boundary={} events={}",
+                span.boundary_id.raw(),
+                span.event_ids.len()
+            )
+        }));
+        Ok(lines)
+    }
+
+    fn select_event(&mut self, event_id: EventId) -> SwatResult<()> {
+        self.filter = EventFilter::All;
+        let events = self.runtime.session_events(&self.filter)?;
+        if let Some(index) = events.iter().position(|event| event.event_id == event_id) {
+            self.selected_event = index;
+            self.push_message(format!("selected event {}", event_id.raw()));
+        } else {
+            self.push_message(format!("unknown event {}", event_id.raw()));
+        }
         Ok(())
     }
 
@@ -785,94 +832,6 @@ pub fn build_store(path: Option<&str>) -> SwatResult<Box<dyn SwatStore>> {
     }
 }
 
-fn parse_tui_command(input: &str) -> SwatResult<TuiCommand> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() || trimmed == "help" {
-        return Ok(TuiCommand::Help);
-    }
-    if trimmed == "attach" {
-        return Ok(TuiCommand::Attach);
-    }
-    if trimmed == "pump" {
-        return Ok(TuiCommand::Pump);
-    }
-    if trimmed == "pause" {
-        return Ok(TuiCommand::Pause);
-    }
-    if trimmed == "resume" {
-        return Ok(TuiCommand::Resume);
-    }
-    if trimmed == "step" {
-        return Ok(TuiCommand::Step);
-    }
-    if trimmed == "clear" {
-        return Ok(TuiCommand::Clear);
-    }
-    if let Some(reason) = trimmed.strip_prefix("snapshot ") {
-        return Ok(TuiCommand::Snapshot {
-            reason: reason.trim().to_string(),
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("events") {
-        let rest = rest.trim();
-        return Ok(TuiCommand::Events {
-            kind: if rest.is_empty() {
-                None
-            } else {
-                Some(parse_event_kind(rest)?)
-            },
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("query ") {
-        return Ok(TuiCommand::Query {
-            expr: rest.trim().to_string(),
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("correlation ") {
-        return Ok(TuiCommand::Correlation {
-            correlation_id: rest.trim().to_string(),
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("span ") {
-        return Ok(TuiCommand::Span {
-            boundary_id: BoundaryId::from_raw(parse_u64(rest.trim(), "boundary id")?),
-        });
-    }
-    if let Some(rest) = trimmed.strip_prefix("event ") {
-        return Ok(TuiCommand::Event {
-            event_id: EventId::from_raw(parse_u64(rest.trim(), "event id")?),
-        });
-    }
-    Err(SwatError::new(format!(
-        "unsupported tui command '{trimmed}'"
-    )))
-}
-
-fn parse_u64(value: &str, label: &str) -> SwatResult<u64> {
-    value
-        .parse::<u64>()
-        .map_err(|err| SwatError::new(format!("invalid {label} '{value}': {err}")))
-}
-
-fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
-    match kind {
-        "Lifecycle" => Ok(EventKind::Lifecycle),
-        "Control" => Ok(EventKind::Control),
-        "Execution" => Ok(EventKind::Execution),
-        "StateMutation" => Ok(EventKind::StateMutation),
-        "ValueObserved" => Ok(EventKind::ValueObserved),
-        "TriggerHit" => Ok(EventKind::TriggerHit),
-        "Snapshot" => Ok(EventKind::Snapshot),
-        "Replay" => Ok(EventKind::Replay),
-        "ModelBoundary" => Ok(EventKind::ModelBoundary),
-        "ToolBoundary" => Ok(EventKind::ToolBoundary),
-        "SourceResolution" => Ok(EventKind::SourceResolution),
-        "SchemaResolution" => Ok(EventKind::SchemaResolution),
-        "PolicyDecision" => Ok(EventKind::PolicyDecision),
-        _ => Err(SwatError::new(format!("unknown event kind '{kind}'"))),
-    }
-}
-
 fn format_event_line(event: &EventEnvelope) -> String {
     format!(
         "#{:>4} {:<16} {}",
@@ -929,4 +888,33 @@ fn buffer_to_string(buffer: &Buffer) -> String {
         lines.push(line.trim_end().to_string());
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_command_entry_uses_shared_help_and_stack_commands() {
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::Mock)).unwrap();
+        app.attach().unwrap();
+        app.resume().unwrap();
+        app.on_tick().unwrap();
+        app.on_tick().unwrap();
+
+        app.execute_command("help breakpoint").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("semantic breakpoints"))
+        );
+        assert!(app.messages.iter().any(|line| line.contains("[shell]")));
+
+        app.execute_command("stack").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("stack spans="))
+        );
+    }
 }

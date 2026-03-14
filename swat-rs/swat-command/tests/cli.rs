@@ -108,6 +108,18 @@ fn mock_cli_can_run_until_expression() {
 }
 
 #[test]
+fn mock_cli_exposes_breakpoint_stack_and_source_help_families() {
+    let stdout = run_cli(
+        &["mock"],
+        "help breakpoint\nhelp stack\nhelp source\nexit\n",
+    );
+
+    assert!(stdout.contains("semantic breakpoints"));
+    assert!(stdout.contains("stack show <boundary_id>"));
+    assert!(stdout.contains("source file <path>"));
+}
+
+#[test]
 fn mock_cli_can_list_and_show_snapshots() {
     let stdout = run_cli(
         &["mock"],
