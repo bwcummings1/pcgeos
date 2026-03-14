@@ -1,4 +1,4 @@
-use swat_ui_tui::{Mode, TuiConfig, run_headless};
+use swat_ui_tui::{run_headless, Mode, TuiConfig};
 
 #[test]
 fn mock_headless_dashboard_renders_live_panes() {
@@ -8,7 +8,7 @@ fn mock_headless_dashboard_renders_live_panes() {
     let rendered = run_headless(config).unwrap();
     assert!(rendered.contains("swat-ui-tui"));
     assert!(rendered.contains("Events"));
-    assert!(rendered.contains("Entities / Spans"));
+    assert!(rendered.contains("Stack / Entities"));
     assert!(rendered.contains("Source"));
     assert!(rendered.contains("Artifacts"));
     assert!(rendered.contains("ModelBoundary"));

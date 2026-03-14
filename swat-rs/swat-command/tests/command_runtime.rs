@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_command::{Command, CommandHost, CommandSurface, command_help, parse_command};
+use swat_command::{command_help, parse_command, Command, CommandHost, CommandSurface};
 use swat_store::InMemoryStore;
 
 #[test]
@@ -19,24 +19,20 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 
     let session = host.execute("session").unwrap();
     assert!(session.summary.contains("session="));
-    assert!(
-        session
-            .lines
-            .iter()
-            .any(|line| line.contains("counts events=1"))
-    );
+    assert!(session
+        .lines
+        .iter()
+        .any(|line| line.contains("counts events=1")));
 
     let resume = host.execute("resume").unwrap();
     assert!(resume.summary.contains("resumed"));
 
     host.execute("pump").unwrap();
     let second = host.execute("pump").unwrap();
-    assert!(
-        second
-            .lines
-            .iter()
-            .any(|line| line.contains("ModelBoundary"))
-    );
+    assert!(second
+        .lines
+        .iter()
+        .any(|line| line.contains("ModelBoundary")));
 
     let queried = host
         .execute(r#"query kind == ModelBoundary and artifact.json $.tool == "search""#)
@@ -59,26 +55,26 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 fn command_registry_exposes_family_help_and_alias_parsing() {
     let help = command_help(Some("breakpoint"), CommandSurface::Shell);
     assert!(help.summary.contains("help breakpoint"));
-    assert!(
-        help.lines
-            .iter()
-            .any(|line| line.contains("breakpoint add <name> <expr>"))
-    );
-    assert!(
-        help.lines
-            .iter()
-            .any(|line| line.contains("semantic breakpoints"))
-    );
+    assert!(help
+        .lines
+        .iter()
+        .any(|line| line.contains("breakpoint add <name> <expr>")));
+    assert!(help
+        .lines
+        .iter()
+        .any(|line| line.contains("semantic breakpoints")));
 
     let tui_help = command_help(Some("source"), CommandSurface::Tui);
-    assert!(
-        tui_help
-            .lines
-            .iter()
-            .any(|line| line.contains("source file <path>"))
-    );
+    assert!(tui_help
+        .lines
+        .iter()
+        .any(|line| line.contains("source file <path>")));
 
     assert_eq!(parse_command("stack").unwrap(), Command::Spans);
+    assert_eq!(
+        parse_command("stack frame 0").unwrap(),
+        Command::Frame { frame_index: 0 }
+    );
     assert_eq!(
         parse_command("stack show 42").unwrap(),
         Command::Span {
@@ -137,12 +133,10 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
     host.execute("pump").unwrap();
     let triggered = host.execute("pump").unwrap();
     assert!(triggered.lines.iter().any(|line| line.contains("trigger=")));
-    assert!(
-        triggered
-            .lines
-            .iter()
-            .any(|line| line.contains("control accepted=true"))
-    );
+    assert!(triggered
+        .lines
+        .iter()
+        .any(|line| line.contains("control accepted=true")));
     let listed = host.execute("breakpoint list").unwrap();
     assert!(listed.lines[0].contains("hits=1"));
     assert!(listed.lines[0].contains("last_event="));
@@ -263,12 +257,10 @@ fn command_host_can_save_and_restore_trigger_sets() {
     restored.execute("pump").unwrap();
     let triggered = restored.execute("pump").unwrap();
     assert!(triggered.lines.iter().any(|line| line.contains("trigger=")));
-    assert!(
-        triggered
-            .lines
-            .iter()
-            .any(|line| line.contains("mock snapshot requested: capture search boundary"))
-    );
+    assert!(triggered
+        .lines
+        .iter()
+        .any(|line| line.contains("mock snapshot requested: capture search boundary")));
     let listed = restored.execute("triggers").unwrap();
     assert!(listed.lines[0].contains("hits=1"));
 
@@ -288,19 +280,15 @@ fn command_host_can_run_until_expression() {
         .execute(r#"until kind == ModelBoundary and artifact.json $.tool == "search""#)
         .unwrap();
     assert!(until.summary.contains("until matched"));
-    assert!(
-        until
-            .lines
-            .iter()
-            .any(|line| line.contains("mock target resumed"))
-    );
+    assert!(until
+        .lines
+        .iter()
+        .any(|line| line.contains("mock target resumed")));
     assert!(until.lines.iter().any(|line| line.contains("TriggerHit")));
-    assert!(
-        until
-            .lines
-            .iter()
-            .any(|line| line.contains("control accepted=true"))
-    );
+    assert!(until
+        .lines
+        .iter()
+        .any(|line| line.contains("control accepted=true")));
 
     let listed = host.execute("triggers").unwrap();
     assert!(listed.lines.is_empty());
@@ -339,28 +327,22 @@ fn command_host_can_list_show_and_replay_snapshots() {
         .execute(&format!("snapshot-show {snapshot_id}"))
         .unwrap();
     assert!(shown.summary.contains("snapshot"));
-    assert!(
-        shown
-            .lines
-            .iter()
-            .any(|line| line.contains("reason=\"shell checkpoint\""))
-    );
-    assert!(
-        shown
-            .lines
-            .iter()
-            .any(|line| line.contains("replay_directives=1"))
-    );
+    assert!(shown
+        .lines
+        .iter()
+        .any(|line| line.contains("reason=\"shell checkpoint\"")));
+    assert!(shown
+        .lines
+        .iter()
+        .any(|line| line.contains("replay_directives=1")));
 
     let replay = host.execute(&format!("replay {snapshot_id}")).unwrap();
     assert!(replay.summary.contains("applied 1 replay directive"));
     assert!(replay.lines.iter().any(|line| line.contains("boundary=42")));
-    assert!(
-        replay
-            .lines
-            .iter()
-            .any(|line| line.contains("prepared replay for boundary"))
-    );
+    assert!(replay
+        .lines
+        .iter()
+        .any(|line| line.contains("prepared replay for boundary")));
 }
 
 #[test]
@@ -422,10 +404,10 @@ def emit(record):
     sys.stdout.flush()
 
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
-emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started"})
-emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed"})
-emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded"})
+emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested", "file": "/tmp/agent.py", "line": 12, "function": "run"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run"})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 time.sleep(0.1)
 "#;
     let adapter =
@@ -453,33 +435,55 @@ time.sleep(0.1)
 
     let correlated = host.execute("correlation req-7").unwrap();
     assert_eq!(correlated.lines.len(), 7);
-    assert!(
-        correlated
-            .lines
-            .iter()
-            .any(|line| line.contains("span_ids=model-1,tool-1"))
-    );
-    assert!(
-        correlated
-            .lines
-            .iter()
-            .any(|line| line.contains("entity_count="))
-    );
+    assert!(correlated
+        .lines
+        .iter()
+        .any(|line| line.contains("span_ids=model-1,tool-1")));
+    assert!(correlated
+        .lines
+        .iter()
+        .any(|line| line.contains("entity_count=")));
 
     let spans = host.execute("stack").unwrap();
     assert_eq!(spans.lines.len(), 2);
+    assert!(spans.lines[0].contains("frame=0"));
+    assert!(spans.lines[0].contains("label=web_search"));
+    assert!(spans.lines[1].contains("frame=1"));
+    assert!(spans.lines[1].contains("label=gpt-4.1-mini"));
+
+    let frame = host.execute("stack frame 0").unwrap();
+    assert!(frame.summary.contains("stack frame 0"));
+    assert!(frame.lines.iter().any(|line| line.contains("depth=1")));
+    assert!(frame
+        .lines
+        .iter()
+        .any(|line| line.contains("label=web_search")));
+    assert!(frame.lines.iter().any(|line| line.contains("events:")));
+
     let model_boundary = spans
         .lines
         .iter()
         .find_map(|line| {
-            let raw = line.strip_prefix("boundary=")?.split_whitespace().next()?;
-            Some(raw.to_string())
+            let raw = line
+                .split_whitespace()
+                .find_map(|part| part.strip_prefix("boundary="))?;
+            if line.contains("label=gpt-4.1-mini") {
+                Some(raw.to_string())
+            } else {
+                None
+            }
         })
         .unwrap();
     let span = host
         .execute(&format!("stack show {model_boundary}"))
         .unwrap();
-    assert_eq!(span.lines.len(), 2);
+    assert!(span.summary.contains("stack boundary"));
+    assert!(span
+        .lines
+        .iter()
+        .any(|line| line.contains("label=gpt-4.1-mini")));
+    assert!(span.lines.iter().any(|line| line.contains("events:")));
+    assert!(span.lines.iter().any(|line| line.contains("event=")));
 
     let model_events = host.execute("events ModelBoundary").unwrap();
     assert_eq!(model_events.lines.len(), 2);
@@ -496,12 +500,10 @@ time.sleep(0.1)
 
     let artifact_detail = host.execute(&format!("artifact-show {event_id}")).unwrap();
     assert!(artifact_detail.summary.contains("artifact 0"));
-    assert!(
-        artifact_detail
-            .lines
-            .iter()
-            .any(|line| line.contains("detail") && line.contains("gpt-4.1-mini"))
-    );
+    assert!(artifact_detail
+        .lines
+        .iter()
+        .any(|line| line.contains("detail") && line.contains("gpt-4.1-mini")));
 
     let source_event_id = host
         .execute("events Execution")
@@ -519,19 +521,15 @@ time.sleep(0.1)
         .execute(&format!("source show {source_event_id}"))
         .unwrap();
     assert!(source.summary.contains("source unresolved"));
-    assert!(
-        source
-            .lines
-            .iter()
-            .any(|line| line.contains("failure_kind=MissingFile"))
-    );
+    assert!(source
+        .lines
+        .iter()
+        .any(|line| line.contains("failure_kind=MissingFile")));
 
     let source_file = host.execute("source file /tmp/agent.py").unwrap();
     assert!(source_file.summary.contains("/tmp/agent.py"));
-    assert!(
-        source_file
-            .lines
-            .iter()
-            .any(|line| line.contains("planner started"))
-    );
+    assert!(source_file
+        .lines
+        .iter()
+        .any(|line| line.contains("planner started")));
 }

@@ -1,20 +1,22 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use swat_control::{Trigger, TriggerEngine};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, PendingEvent,
     PolicyVerdict, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult, TargetAdapter,
     TriggerId,
 };
-use swat_expr::{QueryExpr, evaluate_expression, parse_expression};
+use swat_expr::{evaluate_expression, parse_expression, QueryExpr};
 use swat_replay::ReplayPlan;
 use swat_resolver::{
     CorrelationGroup, EntityRef, EntityRelation, ResolvedEntity, TraceIndex, TraceResolver,
 };
 use swat_session::{ControlReport, ReplayApplyReport, SessionManager};
-use swat_source::{SourceInspection, SourceSnippet, inspect_event_source, resolve_event_source};
+use swat_source::{inspect_event_source, resolve_event_source, SourceInspection, SourceSnippet};
 use swat_store::SwatStore;
-use swat_value::{DecodedValue, ValuePresentation, decode_event_artifacts};
+use swat_value::{decode_event_artifacts, DecodedValue, QueriedValue, ValuePresentation};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceMatch {
@@ -28,6 +30,27 @@ pub struct SnapshotInspection {
     pub snapshot_event: Option<EventEnvelope>,
     pub captured_event_count: usize,
     pub replay_directive_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackFrame {
+    pub frame_index: usize,
+    pub depth: usize,
+    pub boundary_id: BoundaryId,
+    pub event_kind: EventKind,
+    pub label: String,
+    pub event_ids: Vec<EventId>,
+    pub first_event_id: EventId,
+    pub last_event_id: EventId,
+    pub sequence_start: u64,
+    pub sequence_end: u64,
+    pub correlation_id: Option<String>,
+    pub span_id: Option<String>,
+    pub function: Option<String>,
+    pub source_file: Option<String>,
+    pub source_line: Option<u64>,
+    pub entry_summary: String,
+    pub latest_summary: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,6 +204,79 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         TraceResolver::new(self.store).boundary_span(session_id, boundary_id)
     }
 
+    pub fn stack_frames(&self, session_id: SessionId) -> SwatResult<Vec<StackFrame>> {
+        let mut boundary_events: BTreeMap<BoundaryId, Vec<EventEnvelope>> = BTreeMap::new();
+        for event in self.session_events(session_id) {
+            if let EventPayload::Boundary { boundary_id, .. } = &event.payload {
+                boundary_events.entry(*boundary_id).or_default().push(event);
+            }
+        }
+
+        let mut frames = boundary_events
+            .into_iter()
+            .map(|(boundary_id, events)| self.build_stack_frame(boundary_id, events))
+            .collect::<SwatResult<Vec<_>>>()?;
+
+        frames.sort_by_key(|frame| {
+            (
+                frame.sequence_start,
+                std::cmp::Reverse(frame.sequence_end),
+                frame.boundary_id.raw(),
+            )
+        });
+
+        for index in 0..frames.len() {
+            let depth = frames
+                .iter()
+                .take(index)
+                .filter(|candidate| {
+                    candidate.sequence_start <= frames[index].sequence_start
+                        && candidate.sequence_end >= frames[index].sequence_end
+                        && (candidate.sequence_start != frames[index].sequence_start
+                            || candidate.sequence_end != frames[index].sequence_end)
+                })
+                .count();
+            frames[index].depth = depth;
+        }
+
+        frames.sort_by(|left, right| {
+            right
+                .depth
+                .cmp(&left.depth)
+                .then(right.sequence_start.cmp(&left.sequence_start))
+                .then(right.sequence_end.cmp(&left.sequence_end))
+                .then(right.boundary_id.raw().cmp(&left.boundary_id.raw()))
+        });
+
+        for (frame_index, frame) in frames.iter_mut().enumerate() {
+            frame.frame_index = frame_index;
+        }
+
+        Ok(frames)
+    }
+
+    pub fn stack_frame(
+        &self,
+        session_id: SessionId,
+        frame_index: usize,
+    ) -> SwatResult<Option<StackFrame>> {
+        Ok(self
+            .stack_frames(session_id)?
+            .into_iter()
+            .find(|frame| frame.frame_index == frame_index))
+    }
+
+    pub fn stack_frame_by_boundary(
+        &self,
+        session_id: SessionId,
+        boundary_id: BoundaryId,
+    ) -> SwatResult<Option<StackFrame>> {
+        Ok(self
+            .stack_frames(session_id)?
+            .into_iter()
+            .find(|frame| frame.boundary_id == boundary_id))
+    }
+
     pub fn entity_relations(&self, session_id: SessionId) -> SwatResult<Vec<EntityRelation>> {
         TraceResolver::new(self.store).entity_relations(session_id)
     }
@@ -265,6 +361,124 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
     ) -> ReplayPlan {
         ReplayPlan::for_boundary(&self.session_events(session_id), boundary_id)
     }
+
+    fn build_stack_frame(
+        &self,
+        boundary_id: BoundaryId,
+        events: Vec<EventEnvelope>,
+    ) -> SwatResult<StackFrame> {
+        let first = events
+            .first()
+            .cloned()
+            .ok_or_else(|| SwatError::new("cannot build a stack frame without boundary events"))?;
+        let last = events
+            .last()
+            .cloned()
+            .ok_or_else(|| SwatError::new("cannot build a stack frame without boundary events"))?;
+        let metadata = self.stack_frame_metadata(&events)?;
+        let entry_summary = payload_summary(&first)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<none>".to_string());
+        let latest_summary = payload_summary(&last)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<none>".to_string());
+        let label = metadata
+            .name
+            .clone()
+            .or_else(|| metadata.function.clone())
+            .unwrap_or_else(|| latest_summary.clone());
+
+        Ok(StackFrame {
+            frame_index: 0,
+            depth: 0,
+            boundary_id,
+            event_kind: first.kind,
+            label,
+            event_ids: events.iter().map(|event| event.event_id).collect(),
+            first_event_id: first.event_id,
+            last_event_id: last.event_id,
+            sequence_start: first.sequence_no,
+            sequence_end: last.sequence_no,
+            correlation_id: metadata
+                .correlation_id
+                .or_else(|| first.causality.correlation_id.clone())
+                .or_else(|| last.causality.correlation_id.clone()),
+            span_id: metadata.span_id,
+            function: metadata.function,
+            source_file: metadata.source_file,
+            source_line: metadata.source_line,
+            entry_summary,
+            latest_summary,
+        })
+    }
+
+    fn stack_frame_metadata(&self, events: &[EventEnvelope]) -> SwatResult<StackFrameMetadata> {
+        let mut metadata = StackFrameMetadata::default();
+
+        for event in events {
+            if metadata.correlation_id.is_none() {
+                metadata.correlation_id = event.causality.correlation_id.clone();
+            }
+
+            for decoded in self.decoded_artifacts(event)? {
+                maybe_set_string(
+                    &mut metadata.correlation_id,
+                    decoded.query_json_path("$.correlation_id")?,
+                );
+                maybe_set_string(&mut metadata.span_id, decoded.query_json_path("$.span_id")?);
+                maybe_set_string(&mut metadata.name, decoded.query_json_path("$.name")?);
+                maybe_set_string(
+                    &mut metadata.function,
+                    decoded.query_json_path("$.function")?,
+                );
+                maybe_set_string(
+                    &mut metadata.source_file,
+                    decoded.query_json_path("$.file")?,
+                );
+                maybe_set_u64(
+                    &mut metadata.source_line,
+                    decoded.query_json_path("$.line")?,
+                )?;
+            }
+        }
+
+        Ok(metadata)
+    }
+}
+
+#[derive(Default)]
+struct StackFrameMetadata {
+    correlation_id: Option<String>,
+    span_id: Option<String>,
+    name: Option<String>,
+    function: Option<String>,
+    source_file: Option<String>,
+    source_line: Option<u64>,
+}
+
+fn maybe_set_string(slot: &mut Option<String>, value: Option<QueriedValue>) {
+    if slot.is_some() {
+        return;
+    }
+    if let Some(QueriedValue::String(value)) = value {
+        *slot = Some(value);
+    }
+}
+
+fn maybe_set_u64(slot: &mut Option<u64>, value: Option<QueriedValue>) -> SwatResult<()> {
+    if slot.is_some() {
+        return Ok(());
+    }
+    let Some(QueriedValue::Number(raw)) = value else {
+        return Ok(());
+    };
+    let parsed = raw.parse::<u64>().map_err(|err| {
+        SwatError::new(format!(
+            "failed to parse numeric frame metadata '{raw}': {err}"
+        ))
+    })?;
+    *slot = Some(parsed);
+    Ok(())
 }
 
 pub struct LiveSessionApi<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> {

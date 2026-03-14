@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::buffer::Buffer;
@@ -19,8 +19,8 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_api::{LiveSessionApi, TraceInspector};
-use swat_command::{Command, CommandSurface, command_help, parse_command};
+use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
+use swat_command::{command_help, parse_command, Command, CommandSurface};
 use swat_control::TriggerEngine;
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
@@ -367,7 +367,7 @@ impl TuiApp {
         frame.render_stateful_widget(event_list, content[0], &mut event_state);
 
         frame.render_widget(
-            render_lines("Entities / Spans", &snapshot.entity_lines),
+            render_lines("Stack / Entities", &snapshot.entity_lines),
             right[0],
         );
         frame.render_widget(render_lines("Source", &snapshot.source_lines), right[1]);
@@ -432,6 +432,25 @@ impl TuiApp {
         };
         let inspector = self.runtime.inspector();
         let mut lines = Vec::new();
+        let frames = inspector.stack_frames(session_id)?;
+        lines.push(format!("stack frames={}", frames.len()));
+        if frames.is_empty() {
+            lines.push("no frame-oriented boundary spans".to_string());
+        } else {
+            let selected_event_id = selected_event.map(|event| event.event_id);
+            lines.extend(frames.into_iter().take(4).map(|frame| {
+                let marker = if selected_event_id
+                    .map(|event_id| frame.event_ids.contains(&event_id))
+                    .unwrap_or(false)
+                {
+                    '>'
+                } else {
+                    ' '
+                };
+                format!("{marker} {}", format_stack_frame_line(&frame))
+            }));
+        }
+
         if let Some(event) = selected_event {
             lines.push(format!(
                 "selected event={} seq={} kind={:?}",
@@ -453,16 +472,6 @@ impl TuiApp {
         } else {
             lines.push("select an event to inspect entities".to_string());
         }
-
-        let index = inspector.entity_index(session_id)?;
-        lines.push(format!("boundary spans={}", index.boundary_spans.len()));
-        lines.extend(index.boundary_spans.into_iter().take(4).map(|span| {
-            format!(
-                "  boundary={} events={}",
-                span.boundary_id.raw(),
-                span.event_ids.len()
-            )
-        }));
 
         if let Some(correlation_id) =
             selected_event.and_then(|event| event.causality.correlation_id.as_deref())
@@ -629,6 +638,27 @@ impl TuiApp {
                     self.push_message(line);
                 }
             }
+            Command::Frame { frame_index } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect stack frames".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let Some(frame) = self
+                    .runtime
+                    .inspector()
+                    .stack_frame(session_id, frame_index)?
+                else {
+                    return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
+                };
+                self.filter = EventFilter::Boundary(frame.boundary_id);
+                self.selected_event = 0;
+                self.push_message(format!(
+                    "event filter=frame {} boundary {}",
+                    frame.frame_index,
+                    frame.boundary_id.raw()
+                ));
+            }
             Command::Span { boundary_id } => {
                 self.filter = EventFilter::Boundary(boundary_id);
                 self.selected_event = 0;
@@ -678,19 +708,16 @@ impl TuiApp {
 
     fn stack_lines(&self) -> SwatResult<Vec<String>> {
         let Some(session_id) = self.runtime.session_id() else {
-            return Ok(vec![
-                "attach a target to inspect the stack view".to_string(),
-            ]);
+            return Ok(vec!["attach a target to inspect the stack view".to_string()]);
         };
-        let index = self.runtime.inspector().entity_index(session_id)?;
-        let mut lines = vec![format!("stack spans={}", index.boundary_spans.len())];
-        lines.extend(index.boundary_spans.into_iter().take(6).map(|span| {
-            format!(
-                "boundary={} events={}",
-                span.boundary_id.raw(),
-                span.event_ids.len()
-            )
-        }));
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        let mut lines = vec![format!("stack frames={}", frames.len())];
+        lines.extend(
+            frames
+                .into_iter()
+                .take(6)
+                .map(|frame| format_stack_frame_line(&frame)),
+        );
         Ok(lines)
     }
 
@@ -724,6 +751,29 @@ impl TuiApp {
             self.messages.pop_front();
         }
         self.messages.push_back(message);
+    }
+}
+
+fn format_stack_frame_line(frame: &StackFrame) -> String {
+    let mut line = format!(
+        "frame={} depth={} boundary={} kind={:?} label={}",
+        frame.frame_index,
+        frame.depth,
+        frame.boundary_id.raw(),
+        frame.event_kind,
+        frame.label
+    );
+    if let Some(source) = short_stack_source(frame) {
+        line.push_str(&format!(" source={source}"));
+    }
+    line
+}
+
+fn short_stack_source(frame: &StackFrame) -> Option<String> {
+    let file = frame.source_file.as_deref()?;
+    match frame.source_line {
+        Some(line) => Some(format!("{file}:{line}")),
+        None => Some(file.to_string()),
     }
 }
 
@@ -903,18 +953,16 @@ mod tests {
         app.on_tick().unwrap();
 
         app.execute_command("help breakpoint").unwrap();
-        assert!(
-            app.messages
-                .iter()
-                .any(|line| line.contains("semantic breakpoints"))
-        );
+        assert!(app
+            .messages
+            .iter()
+            .any(|line| line.contains("semantic breakpoints")));
         assert!(app.messages.iter().any(|line| line.contains("[shell]")));
 
         app.execute_command("stack").unwrap();
-        assert!(
-            app.messages
-                .iter()
-                .any(|line| line.contains("stack spans="))
-        );
+        assert!(app
+            .messages
+            .iter()
+            .any(|line| line.contains("stack frames=")));
     }
 }

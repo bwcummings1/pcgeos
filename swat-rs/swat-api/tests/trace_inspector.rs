@@ -80,17 +80,13 @@ fn trace_inspector_can_find_boundary_events_and_artifact_text() {
     assert_eq!(inspection.snapshot.reason, "api snapshot");
     assert!(inspection.captured_event_count >= 5);
     assert_eq!(inspection.replay_directive_count, 1);
-    assert!(
-        inspector
-            .replay_plan_for_snapshot(snapshot_id)
-            .unwrap()
-            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
-    );
-    assert!(
-        inspector
-            .replay_plan_for_boundary(session_id, swat_adapter_mock::MOCK_BOUNDARY_ID)
-            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
-    );
+    assert!(inspector
+        .replay_plan_for_snapshot(snapshot_id)
+        .unwrap()
+        .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID));
+    assert!(inspector
+        .replay_plan_for_boundary(session_id, swat_adapter_mock::MOCK_BOUNDARY_ID)
+        .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID));
 }
 
 #[test]
@@ -108,9 +104,9 @@ def emit(record):
 
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested"})
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started"})
-emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed"})
-emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run"})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
 "#;
@@ -173,7 +169,7 @@ time.sleep(0.1)
             .events_for_source_file(session_id, "/tmp/agent.py")
             .unwrap()
             .len(),
-        1
+        4
     );
     assert_eq!(
         inspector
@@ -195,6 +191,35 @@ time.sleep(0.1)
         })
         .unwrap();
     assert_eq!(inspector.boundary_span(session_id, boundary_id).len(), 2);
+
+    let frames = inspector.stack_frames(session_id).unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].frame_index, 0);
+    assert_eq!(frames[0].label, "web_search");
+    assert_eq!(frames[0].depth, 1);
+    assert_eq!(frames[0].span_id.as_deref(), Some("tool-1"));
+    assert_eq!(frames[0].source_file.as_deref(), Some("/tmp/agent.py"));
+    assert_eq!(frames[0].source_line, Some(14));
+    assert_eq!(frames[1].label, "gpt-4.1-mini");
+    assert_eq!(frames[1].depth, 0);
+    assert_eq!(frames[1].span_id.as_deref(), Some("model-1"));
+    assert_eq!(frames[1].correlation_id.as_deref(), Some("req-7"));
+    assert_eq!(
+        inspector
+            .stack_frame(session_id, 0)
+            .unwrap()
+            .unwrap()
+            .boundary_id,
+        frames[0].boundary_id
+    );
+    assert_eq!(
+        inspector
+            .stack_frame_by_boundary(session_id, boundary_id)
+            .unwrap()
+            .unwrap()
+            .label,
+        "gpt-4.1-mini"
+    );
 }
 
 #[test]

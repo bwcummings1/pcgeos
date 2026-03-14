@@ -115,6 +115,7 @@ fn mock_cli_exposes_breakpoint_stack_and_source_help_families() {
     );
 
     assert!(stdout.contains("semantic breakpoints"));
+    assert!(stdout.contains("stack frame <index>"));
     assert!(stdout.contains("stack show <boundary_id>"));
     assert!(stdout.contains("source file <path>"));
 }

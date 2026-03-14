@@ -237,11 +237,12 @@ It now also supports trigger enable/disable, hit counters and last-hit
 metadata, action-aware trigger persistence, shell-level `until <expr>`, grouped
 help topics, a shared command/help registry consumed by both shell help and
 TUI discovery, first debugger-family aliases for `stack`, `source`, and
-`breakpoint`, status/session introspection, richer artifact rendering, source
-failure reporting, and a runnable CLI shell.
+`breakpoint`, frame-oriented stack inspection projected from boundary spans,
+status/session introspection, richer artifact rendering, source failure
+reporting, and a runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
-with an event list, entity/span context pane, source preview, artifact preview,
+with an event list, stack/entity context pane, source preview, artifact preview,
 live command entry, and support for mock, local, and agent runtimes. It also
 supports a headless render mode for demos and validation.
 

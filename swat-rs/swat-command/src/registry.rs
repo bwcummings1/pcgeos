@@ -147,8 +147,8 @@ const COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         key: "stack",
-        synopsis: "stack | stack show <boundary_id>",
-        summary: "inspect the current boundary-span stack view",
+        synopsis: "stack | stack frame <index> | stack show <boundary_id>",
+        summary: "inspect frame-oriented stack projections over boundary spans",
         aliases: &["spans", "span"],
         tui_supported: true,
     },
@@ -279,13 +279,13 @@ const FAMILIES: &[CommandFamily] = &[
     CommandFamily {
         topic: "stack",
         aliases: &["spans", "span"],
-        summary: "inspect the current boundary-span stack view",
+        summary: "inspect frame-oriented stack projections over the shared boundary model",
         commands: &["stack"],
         notes: &[
-            "This first slice maps stack inspection to boundary spans exposed by the shared resolver APIs.",
-            "The legacy-style frame vocabulary will deepen later without breaking these command families.",
+            "Stack frames are projected from shared boundary spans through `swat-api`, not rebuilt inside the shell or TUI.",
+            "Use `stack frame <index>` for debugger-style frame details and `stack show <boundary_id>` when you need the raw span identity.",
         ],
-        examples: &["stack", "stack show 42"],
+        examples: &["stack", "stack frame 0", "stack show 42"],
     },
     CommandFamily {
         topic: "source",

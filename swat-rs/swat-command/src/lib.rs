@@ -8,8 +8,8 @@ use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use swat_api::{LiveSessionApi, TraceInspector};
-use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerMatch, pump_with_triggers};
+use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
+use swat_control::{pump_with_triggers, Trigger, TriggerAction, TriggerEngine, TriggerMatch};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, SessionId,
     SnapshotId, SwatError, SwatResult, TargetAdapter, TriggerId,
@@ -19,7 +19,7 @@ use swat_script::ScriptHost;
 use swat_session::SessionManager;
 use swat_store::SwatStore;
 
-pub use registry::{CommandSurface, command_help};
+pub use registry::{command_help, CommandSurface};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -94,6 +94,9 @@ pub enum Command {
         selector_id: u64,
     },
     Spans,
+    Frame {
+        frame_index: usize,
+    },
     Span {
         boundary_id: BoundaryId,
     },
@@ -190,6 +193,7 @@ impl CommandHost {
             Command::Until { expr } => self.until_expr(&expr),
             Command::Replay { selector_id } => self.replay(selector_id),
             Command::Spans => self.list_spans(),
+            Command::Frame { frame_index } => self.show_frame(frame_index),
             Command::Span { boundary_id } => self.show_span(boundary_id),
             Command::Source {
                 event_id,
@@ -1008,43 +1012,52 @@ impl CommandHost {
     fn list_spans(&self) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let inspector = self.inspector();
-        let index = inspector.entity_index(session_id)?;
+        let frames = inspector.stack_frames(session_id)?;
         Ok(CommandOutput::new(
-            format!("{} boundary span(s)", index.boundary_spans.len()),
-            index
-                .boundary_spans
+            format!("{} stack frame(s)", frames.len()),
+            frames
                 .into_iter()
-                .map(|span| {
-                    let events = inspector.boundary_span(session_id, span.boundary_id);
-                    let seq_range = match (events.first(), events.last()) {
-                        (Some(first), Some(last)) => {
-                            format!("{}..{}", first.sequence_no, last.sequence_no)
-                        }
-                        _ => "-".to_string(),
-                    };
-                    let tail = events.last().and_then(payload_summary).unwrap_or("<none>");
-                    format!(
-                        "boundary={} events={} seq={} tail={}",
-                        span.boundary_id.raw(),
-                        span.event_ids.len(),
-                        seq_range,
-                        tail
-                    )
-                })
+                .map(|frame| format_stack_frame_summary(&frame))
                 .collect(),
+        ))
+    }
+
+    fn show_frame(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let Some(frame) = inspector.stack_frame(session_id, frame_index)? else {
+            return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
+        };
+        let events = inspector.boundary_span(session_id, frame.boundary_id);
+        let mut lines = format_stack_frame_detail(&frame);
+        lines.push("events:".to_string());
+        lines.extend(events.iter().map(format_event_line));
+        Ok(CommandOutput::new(
+            format!("stack frame {} {}", frame.frame_index, frame.label),
+            lines,
         ))
     }
 
     fn show_span(&self, boundary_id: BoundaryId) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let events = self.inspector().boundary_span(session_id, boundary_id);
+        let inspector = self.inspector();
+        let events = inspector.boundary_span(session_id, boundary_id);
+        let Some(frame) = inspector.stack_frame_by_boundary(session_id, boundary_id)? else {
+            return Ok(CommandOutput::new(
+                format!(
+                    "{} event(s) in boundary span {}",
+                    events.len(),
+                    boundary_id.raw()
+                ),
+                events.iter().map(format_event_line).collect(),
+            ));
+        };
+        let mut lines = format_stack_frame_detail(&frame);
+        lines.push("events:".to_string());
+        lines.extend(events.iter().map(format_event_line));
         Ok(CommandOutput::new(
-            format!(
-                "{} event(s) in boundary span {}",
-                events.len(),
-                boundary_id.raw()
-            ),
-            events.iter().map(format_event_line).collect(),
+            format!("stack boundary {} {}", boundary_id.raw(), frame.label),
+            lines,
         ))
     }
 
@@ -1328,6 +1341,11 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
     if trimmed.is_empty() || trimmed == "list" {
         return Ok(Command::Spans);
     }
+    if let Some(rest) = trimmed.strip_prefix("frame ") {
+        return Ok(Command::Frame {
+            frame_index: parse_usize(rest.trim(), "frame index")?,
+        });
+    }
     let boundary = trimmed
         .strip_prefix("show ")
         .map(str::trim)
@@ -1557,6 +1575,65 @@ fn format_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn format_stack_frame_summary(frame: &StackFrame) -> String {
+    let mut parts = vec![
+        format!("frame={}", frame.frame_index),
+        format!("boundary={}", frame.boundary_id.raw()),
+        format!("depth={}", frame.depth),
+        format!("kind={:?}", frame.event_kind),
+        format!("events={}", frame.event_ids.len()),
+        format!("seq={}..{}", frame.sequence_start, frame.sequence_end),
+        format!("label={}", frame.label),
+    ];
+    if let Some(span_id) = &frame.span_id {
+        parts.push(format!("span={span_id}"));
+    }
+    if let Some(correlation_id) = &frame.correlation_id {
+        parts.push(format!("correlation={correlation_id}"));
+    }
+    if let Some(source) = short_stack_frame_source(frame) {
+        parts.push(format!("source={source}"));
+    }
+    parts.push(format!("latest={}", frame.latest_summary));
+    parts.join(" ")
+}
+
+fn format_stack_frame_detail(frame: &StackFrame) -> Vec<String> {
+    let mut lines = vec![
+        format!("frame={}", frame.frame_index),
+        format!("boundary={}", frame.boundary_id.raw()),
+        format!("depth={}", frame.depth),
+        format!("kind={:?}", frame.event_kind),
+        format!("label={}", frame.label),
+        format!("events={}", frame.event_ids.len()),
+        format!("seq={}..{}", frame.sequence_start, frame.sequence_end),
+        format!("entry={}", frame.entry_summary),
+        format!("latest={}", frame.latest_summary),
+    ];
+    lines.push(format!(
+        "correlation={}",
+        frame.correlation_id.as_deref().unwrap_or("-")
+    ));
+    lines.push(format!("span={}", frame.span_id.as_deref().unwrap_or("-")));
+    lines.push(format!(
+        "function={}",
+        frame.function.as_deref().unwrap_or("-")
+    ));
+    lines.push(format!(
+        "source={}",
+        short_stack_frame_source(frame).unwrap_or_else(|| "-".to_string())
+    ));
+    lines
+}
+
+fn short_stack_frame_source(frame: &StackFrame) -> Option<String> {
+    let file = frame.source_file.as_deref()?;
+    match frame.source_line {
+        Some(line) => Some(format!("{file}:{line}")),
+        None => Some(file.to_string()),
+    }
 }
 
 fn event_looks_like_target_exit(event: &EventEnvelope) -> bool {
