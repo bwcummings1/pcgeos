@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use swat_control::{Trigger, TriggerEngine};
 use swat_core::{
@@ -14,7 +14,10 @@ use swat_resolver::{
     CorrelationGroup, EntityRef, EntityRelation, ResolvedEntity, TraceIndex, TraceResolver,
 };
 use swat_session::{ControlReport, ReplayApplyReport, SessionManager};
-use swat_source::{inspect_event_source, resolve_event_source, SourceInspection, SourceSnippet};
+use swat_source::{
+    extract_event_source_location, inspect_event_source, is_real_source_path, load_source_snippet,
+    resolve_event_source, SourceInspection, SourceLocation, SourceSnippet,
+};
 use swat_store::SwatStore;
 use swat_value::{decode_event_artifacts, DecodedValue, QueriedValue, ValuePresentation};
 
@@ -51,6 +54,16 @@ pub struct StackFrame {
     pub source_line: Option<u64>,
     pub entry_summary: String,
     pub latest_summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFileSummary {
+    pub file: String,
+    pub event_count: usize,
+    pub first_line: Option<usize>,
+    pub last_line: Option<usize>,
+    pub functions: Vec<String>,
+    pub is_real_path: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,6 +330,56 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         TraceResolver::new(self.store).events_for_source_file(session_id, file)
     }
 
+    pub fn source_files(&self, session_id: SessionId) -> SwatResult<Vec<SourceFileSummary>> {
+        let mut files = BTreeMap::<String, SourceFileSummaryBuilder>::new();
+
+        for event in self.session_events(session_id) {
+            let Some(location) = extract_event_source_location(self.store, &event)? else {
+                continue;
+            };
+            let entry = files
+                .entry(location.file.clone())
+                .or_insert_with(|| SourceFileSummaryBuilder::new(&location.file));
+            entry.event_count += 1;
+            entry.first_line = Some(
+                entry
+                    .first_line
+                    .map_or(location.line, |line| line.min(location.line)),
+            );
+            entry.last_line = Some(
+                entry
+                    .last_line
+                    .map_or(location.line, |line| line.max(location.line)),
+            );
+            if let Some(function) = location.function {
+                entry.functions.insert(function);
+            }
+        }
+
+        Ok(files
+            .into_values()
+            .map(SourceFileSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn source_file_view(
+        &self,
+        file: &str,
+        line: usize,
+        before: usize,
+        after: usize,
+    ) -> SwatResult<SourceSnippet> {
+        load_source_snippet(
+            SourceLocation {
+                file: file.to_string(),
+                line,
+                function: None,
+            },
+            before,
+            after,
+        )
+    }
+
     pub fn session_snapshots(&self, session_id: SessionId) -> Vec<SnapshotRecord> {
         self.store.snapshots_for_session(session_id)
     }
@@ -454,6 +517,37 @@ struct StackFrameMetadata {
     function: Option<String>,
     source_file: Option<String>,
     source_line: Option<u64>,
+}
+
+struct SourceFileSummaryBuilder {
+    file: String,
+    event_count: usize,
+    first_line: Option<usize>,
+    last_line: Option<usize>,
+    functions: BTreeSet<String>,
+}
+
+impl SourceFileSummaryBuilder {
+    fn new(file: &str) -> Self {
+        Self {
+            file: file.to_string(),
+            event_count: 0,
+            first_line: None,
+            last_line: None,
+            functions: BTreeSet::new(),
+        }
+    }
+
+    fn build(self) -> SourceFileSummary {
+        SourceFileSummary {
+            file: self.file.clone(),
+            event_count: self.event_count,
+            first_line: self.first_line,
+            last_line: self.last_line,
+            functions: self.functions.into_iter().collect(),
+            is_real_path: is_real_source_path(&self.file),
+        }
+    }
 }
 
 fn maybe_set_string(slot: &mut Option<String>, value: Option<QueriedValue>) {

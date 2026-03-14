@@ -167,6 +167,20 @@ const COMMANDS: &[CommandDescriptor] = &[
         tui_supported: true,
     },
     CommandDescriptor {
+        key: "source-files",
+        synopsis: "source files",
+        summary: "list discovered source files across the active session",
+        aliases: &[],
+        tui_supported: true,
+    },
+    CommandDescriptor {
+        key: "source-view",
+        synopsis: "source view <path> [line] [before] [after]",
+        summary: "show a file-backed source snippet without starting from one event",
+        aliases: &[],
+        tui_supported: true,
+    },
+    CommandDescriptor {
         key: "breakpoint-list",
         synopsis: "breakpoint list",
         summary: "list semantic breakpoints backed by the trigger engine",
@@ -291,12 +305,18 @@ const FAMILIES: &[CommandFamily] = &[
         topic: "source",
         aliases: &["srclist", "slist"],
         summary: "navigate from events into source context and file-backed views",
-        commands: &["source-show", "source-file"],
+        commands: &["source-show", "source-file", "source-files", "source-view"],
         notes: &[
             "Legacy-style source workflows now start from shared event and resolver APIs instead of shell-local helpers.",
+            "Use `source files` to discover the file set for a session and `source view` to open a file directly on the shared source layer.",
             "The existing shorthand `source <event_id> [before] [after]` remains available.",
         ],
-        examples: &["source show 7", "source file /tmp/agent.py"],
+        examples: &[
+            "source files",
+            "source show 7",
+            "source file /tmp/agent.py",
+            "source view /tmp/agent.py 42 2 4",
+        ],
     },
     CommandFamily {
         topic: "artifact",

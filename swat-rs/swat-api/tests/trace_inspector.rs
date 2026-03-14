@@ -1,5 +1,6 @@
+use std::fs;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
@@ -171,6 +172,14 @@ time.sleep(0.1)
             .len(),
         4
     );
+    let source_files = inspector.source_files(session_id).unwrap();
+    assert_eq!(source_files.len(), 1);
+    assert_eq!(source_files[0].file, "/tmp/agent.py");
+    assert_eq!(source_files[0].event_count, 4);
+    assert_eq!(source_files[0].first_line, Some(10));
+    assert_eq!(source_files[0].last_line, Some(21));
+    assert_eq!(source_files[0].functions, vec!["run".to_string()]);
+    assert!(!source_files[0].is_real_path);
     assert_eq!(
         inspector
             .events_for_value_key(session_id, "agent.state")
@@ -220,6 +229,40 @@ time.sleep(0.1)
             .label,
         "gpt-4.1-mini"
     );
+}
+
+#[test]
+fn trace_inspector_can_view_source_files_directly() {
+    let path = std::env::temp_dir().join(format!(
+        "swat-source-view-{}-{}.py",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        "def alpha():\n    return 1\n\ndef beta():\n    return alpha()\n",
+    )
+    .unwrap();
+
+    let store = InMemoryStore::new();
+    let inspector = TraceInspector::new(&store);
+    let snippet = inspector
+        .source_file_view(&path.display().to_string(), 4, 1, 1)
+        .unwrap();
+
+    assert_eq!(snippet.location.file, path.display().to_string());
+    assert_eq!(snippet.focus_line, 4);
+    assert_eq!(snippet.start_line, 3);
+    assert_eq!(snippet.end_line, 5);
+    assert!(snippet
+        .lines
+        .iter()
+        .any(|line| line.text.contains("def beta")));
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]

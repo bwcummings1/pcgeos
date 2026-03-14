@@ -118,6 +118,8 @@ fn mock_cli_exposes_breakpoint_stack_and_source_help_families() {
     assert!(stdout.contains("stack frame <index>"));
     assert!(stdout.contains("stack show <boundary_id>"));
     assert!(stdout.contains("source file <path>"));
+    assert!(stdout.contains("source files"));
+    assert!(stdout.contains("source view <path>"));
 }
 
 #[test]

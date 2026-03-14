@@ -105,8 +105,15 @@ pub enum Command {
         before: usize,
         after: usize,
     },
+    SourceFiles,
     SourceFile {
         file: String,
+    },
+    SourceView {
+        file: String,
+        line: usize,
+        before: usize,
+        after: usize,
     },
     Script {
         script: String,
@@ -200,7 +207,14 @@ impl CommandHost {
                 before,
                 after,
             } => self.show_source(event_id, before, after),
+            Command::SourceFiles => self.list_source_files(),
             Command::SourceFile { file } => self.list_source_file_events(&file),
+            Command::SourceView {
+                file,
+                line,
+                before,
+                after,
+            } => self.show_source_file_view(&file, line, before, after),
             Command::Script { script } => self.run_script(&script),
         }
     }
@@ -1124,6 +1138,68 @@ impl CommandHost {
         ))
     }
 
+    fn list_source_files(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let files = self.inspector().source_files(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} source file(s)", files.len()),
+            files
+                .into_iter()
+                .map(|file| {
+                    let line_range = match (file.first_line, file.last_line) {
+                        (Some(first), Some(last)) => format!("{first}..{last}"),
+                        _ => "-".to_string(),
+                    };
+                    let functions = if file.functions.is_empty() {
+                        "-".to_string()
+                    } else {
+                        file.functions.join(",")
+                    };
+                    format!(
+                        "file={} events={} lines={} functions={} real={}",
+                        file.file, file.event_count, line_range, functions, file.is_real_path
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    fn show_source_file_view(
+        &self,
+        file: &str,
+        line: usize,
+        before: usize,
+        after: usize,
+    ) -> SwatResult<CommandOutput> {
+        let snippet = self
+            .inspector()
+            .source_file_view(file, line, before, after)?;
+        let mut lines = vec![
+            format!("file={}", snippet.location.file),
+            format!("line={}", snippet.location.line),
+            format!(
+                "function={}",
+                snippet
+                    .location
+                    .function
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+        ];
+        lines.extend(snippet.lines.iter().map(|line| {
+            let marker = if line.line_number == snippet.focus_line {
+                '>'
+            } else {
+                ' '
+            };
+            format!("{marker} {:>4} {}", line.line_number, line.text)
+        }));
+        Ok(CommandOutput::new(
+            format!("source {}:{}", snippet.location.file, snippet.location.line),
+            lines,
+        ))
+    }
+
     fn run_script(&self, script: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let mut host = ScriptHost::new(self.store.as_ref(), session_id);
@@ -1313,8 +1389,14 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     }
     if let Some(rest) = trimmed.strip_prefix("source ") {
         let rest = rest.trim();
+        if rest == "files" {
+            return Ok(Command::SourceFiles);
+        }
         if let Some(rest) = rest.strip_prefix("show ") {
             return parse_source_show(rest);
+        }
+        if let Some(rest) = rest.strip_prefix("view ") {
+            return parse_source_view(rest);
         }
         if let Some(rest) = rest.strip_prefix("file ") {
             let file = rest.trim();
@@ -1426,6 +1508,34 @@ fn parse_source_show(rest: &str) -> SwatResult<Command> {
         .unwrap_or(2);
     Ok(Command::Source {
         event_id: EventId::from_raw(parse_u64(event_id, "event id")?),
+        before,
+        after,
+    })
+}
+
+fn parse_source_view(rest: &str) -> SwatResult<Command> {
+    let mut parts = rest.split_whitespace();
+    let file = parts
+        .next()
+        .ok_or_else(|| SwatError::new("source view requires a path"))?;
+    let line = parts
+        .next()
+        .map(|value| parse_usize(value, "source line"))
+        .transpose()?
+        .unwrap_or(1);
+    let before = parts
+        .next()
+        .map(|value| parse_usize(value, "before context"))
+        .transpose()?
+        .unwrap_or(2);
+    let after = parts
+        .next()
+        .map(|value| parse_usize(value, "after context"))
+        .transpose()?
+        .unwrap_or(8);
+    Ok(Command::SourceView {
+        file: file.to_string(),
+        line,
         before,
         after,
     })

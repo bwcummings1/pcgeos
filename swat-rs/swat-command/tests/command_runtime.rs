@@ -95,6 +95,16 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             file: "/tmp/agent.py".to_string(),
         }
     );
+    assert_eq!(parse_command("source files").unwrap(), Command::SourceFiles);
+    assert_eq!(
+        parse_command("source view /tmp/agent.py 4 1 2").unwrap(),
+        Command::SourceView {
+            file: "/tmp/agent.py".to_string(),
+            line: 4,
+            before: 1,
+            after: 2,
+        }
+    );
     assert_eq!(parse_command("breakpoint list").unwrap(), Command::Triggers);
     assert_eq!(
         parse_command("breakpoint disable 9").unwrap(),
@@ -391,6 +401,37 @@ fn command_host_can_load_legacy_v1_trigger_files() {
 }
 
 #[test]
+fn command_host_can_view_source_file_directly() {
+    let path = std::env::temp_dir().join(format!(
+        "swat-command-source-view-{}-{}.py",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        "def alpha():\n    return 1\n\ndef beta():\n    return alpha()\n",
+    )
+    .unwrap();
+
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+    let viewed = host
+        .execute(&format!("source view {} 4 1 1", path.display()))
+        .unwrap();
+    assert!(viewed
+        .summary
+        .contains(&format!("source {}:4", path.display())));
+    assert!(viewed.lines.iter().any(|line| line.contains("def beta")));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn agent_command_host_can_resolve_entities_spans_and_artifacts() {
     let code = r#"
 import json
@@ -532,4 +573,9 @@ time.sleep(0.1)
         .lines
         .iter()
         .any(|line| line.contains("planner started")));
+
+    let source_files = host.execute("source files").unwrap();
+    assert_eq!(source_files.lines.len(), 1);
+    assert!(source_files.lines[0].contains("file=/tmp/agent.py"));
+    assert!(source_files.lines[0].contains("functions=run"));
 }

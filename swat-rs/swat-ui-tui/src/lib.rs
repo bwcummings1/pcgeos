@@ -193,6 +193,7 @@ pub struct TuiApp {
     selected_event: usize,
     command_mode: bool,
     command_input: String,
+    manual_source: Option<ManualSourceView>,
     messages: VecDeque<String>,
 }
 
@@ -207,6 +208,7 @@ impl TuiApp {
             selected_event: 0,
             command_mode: false,
             command_input: String::new(),
+            manual_source: None,
             messages: VecDeque::from([
                 "q quit | :help | a attach | u pump | r resume | p pause | s step".to_string(),
             ]),
@@ -498,6 +500,9 @@ impl TuiApp {
     }
 
     fn source_lines(&self, selected_event: Option<&EventEnvelope>) -> SwatResult<Vec<String>> {
+        if let Some(view) = &self.manual_source {
+            return Ok(view.lines.clone());
+        }
         let Some(event) = selected_event else {
             return Ok(vec!["select an event to inspect source".to_string()]);
         };
@@ -587,6 +592,7 @@ impl TuiApp {
         if input == "clear" {
             self.filter = EventFilter::All;
             self.selected_event = 0;
+            self.manual_source = None;
             self.push_message("cleared event filter".to_string());
             self.clamp_selection()?;
             return Ok(());
@@ -621,16 +627,19 @@ impl TuiApp {
             Command::Events { kind } => {
                 self.filter = kind.map_or(EventFilter::All, EventFilter::Kind);
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!("event filter={}", self.filter.label()));
             }
             Command::Query { expr } => {
                 self.filter = EventFilter::Query(expr.clone());
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!("event filter=query {expr}"));
             }
             Command::Correlation { correlation_id } => {
                 self.filter = EventFilter::Correlation(correlation_id.clone());
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!("event filter=correlation {correlation_id}"));
             }
             Command::Spans => {
@@ -653,6 +662,7 @@ impl TuiApp {
                 };
                 self.filter = EventFilter::Boundary(frame.boundary_id);
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!(
                     "event filter=frame {} boundary {}",
                     frame.frame_index,
@@ -662,17 +672,73 @@ impl TuiApp {
             Command::Span { boundary_id } => {
                 self.filter = EventFilter::Boundary(boundary_id);
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!("event filter=boundary {}", boundary_id.raw()));
             }
             Command::Event { event_id } => self.select_event(event_id)?,
             Command::Source { event_id, .. } => {
+                self.manual_source = None;
                 self.select_event(event_id)?;
                 self.push_message(format!("source event={}", event_id.raw()));
+            }
+            Command::SourceFiles => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to discover source files".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let files = self.runtime.inspector().source_files(session_id)?;
+                self.push_message(format!("source files={}", files.len()));
+                for file in files.into_iter().take(MAX_MESSAGES.saturating_sub(1)) {
+                    let functions = if file.functions.is_empty() {
+                        "-".to_string()
+                    } else {
+                        file.functions.join(",")
+                    };
+                    self.push_message(format!(
+                        "file={} events={} functions={} real={}",
+                        file.file, file.event_count, functions, file.is_real_path
+                    ));
+                }
             }
             Command::SourceFile { file } => {
                 self.filter = EventFilter::SourceFile(file.clone());
                 self.selected_event = 0;
+                self.manual_source = None;
                 self.push_message(format!("event filter=source.file {file}"));
+            }
+            Command::SourceView {
+                file,
+                line,
+                before,
+                after,
+            } => {
+                let snippet = self
+                    .runtime
+                    .inspector()
+                    .source_file_view(&file, line, before, after)?;
+                let mut lines = vec![
+                    format!("file={}", snippet.location.file),
+                    format!("line={}", snippet.location.line),
+                    format!(
+                        "function={}",
+                        snippet
+                            .location
+                            .function
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string())
+                    ),
+                ];
+                lines.extend(snippet.lines.iter().map(|line| {
+                    let marker = if line.line_number == snippet.focus_line {
+                        '>'
+                    } else {
+                        ' '
+                    };
+                    format!("{marker} {:>4} {}", line.line_number, line.text)
+                }));
+                self.manual_source = Some(ManualSourceView { lines });
+                self.push_message(format!("source view {}:{}", file, line));
             }
             other => {
                 return Err(SwatError::new(format!(
@@ -723,6 +789,7 @@ impl TuiApp {
 
     fn select_event(&mut self, event_id: EventId) -> SwatResult<()> {
         self.filter = EventFilter::All;
+        self.manual_source = None;
         let events = self.runtime.session_events(&self.filter)?;
         if let Some(index) = events.iter().position(|event| event.event_id == event_id) {
             self.selected_event = index;
@@ -752,6 +819,10 @@ impl TuiApp {
         }
         self.messages.push_back(message);
     }
+}
+
+struct ManualSourceView {
+    lines: Vec<String>,
 }
 
 fn format_stack_frame_line(frame: &StackFrame) -> String {
@@ -943,6 +1014,8 @@ fn buffer_to_string(buffer: &Buffer) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn tui_command_entry_uses_shared_help_and_stack_commands() {
@@ -964,5 +1037,31 @@ mod tests {
             .messages
             .iter()
             .any(|line| line.contains("stack frames=")));
+    }
+
+    #[test]
+    fn tui_command_entry_can_view_source_files_directly() {
+        let path = std::env::temp_dir().join(format!(
+            "swat-ui-source-view-{}-{}.py",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            "def alpha():\n    return 1\n\ndef beta():\n    return alpha()\n",
+        )
+        .unwrap();
+
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::Mock)).unwrap();
+        app.execute_command(&format!("source view {} 4 1 1", path.display()))
+            .unwrap();
+
+        let lines = app.source_lines(None).unwrap();
+        assert!(lines.iter().any(|line| line.contains("def beta")));
+
+        let _ = fs::remove_file(path);
     }
 }

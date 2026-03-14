@@ -238,8 +238,9 @@ metadata, action-aware trigger persistence, shell-level `until <expr>`, grouped
 help topics, a shared command/help registry consumed by both shell help and
 TUI discovery, first debugger-family aliases for `stack`, `source`, and
 `breakpoint`, frame-oriented stack inspection projected from boundary spans,
-status/session introspection, richer artifact rendering, source failure
-reporting, and a runnable CLI shell.
+session-wide source-file discovery plus direct file viewing on the shared
+source layer, status/session introspection, richer artifact rendering, source
+failure reporting, and a runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
 with an event list, stack/entity context pane, source preview, artifact preview,
