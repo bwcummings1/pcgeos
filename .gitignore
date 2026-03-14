@@ -49,6 +49,7 @@ bin/swat
 
 # IDE stuff
 .vscode
+__pycache__/
 **/.symdir.1
 **/.symdir.2
 **/.symdir.3
