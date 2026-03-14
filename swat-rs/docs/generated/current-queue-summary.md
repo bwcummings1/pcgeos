@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `2/21 done`
-- Pending: `19`
+- Progress: `3/21 done`
+- Pending: `18`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -13,7 +13,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 |------|--------|-----------|--------|--------|
 | T-001 | done | M1 | swat-rs-full-completion-plan | 986f37e0 |
 | T-002 | done | M1 | swat-rs-full-completion-plan | 3a188575 |
-| T-003 | pending | M1 | - | - |
+| T-003 | done | M1 | swat-rs-full-completion-plan | 3834ac16 |
 | T-004 | pending | M1 | - | - |
 | T-005 | pending | M1 | - | - |
 | T-006 | pending | M1 | - | - |
@@ -39,7 +39,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 |------|-------------|-------|
 | T-001 | Add a shared command/help registry and first debugger-family aliases for `stack`, `source`, and `breakpoint`. | Registry is now shared by shell help and TUI discovery; ADR 0026 landed. |
 | T-002 | Add frame-oriented stack inspection APIs and shell/TUI workflows on top of the current boundary-span view. | `swat-api` now projects stack frames from boundary spans, and both shell and TUI use the shared frame model. |
-| T-003 | Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup. | `source show` and `source file` exist, but broader source-navigation ergonomics are still missing. |
+| T-003 | Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup. | `swat-api` now catalogs source files and direct file views, and both shell and TUI expose `source files` / `source view` workflows. |
 | T-004 | Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output. | Keep using shared control APIs; do not fork a second command surface. |
 | T-005 | Add shared help/completion/history/discovery metadata across shell and TUI. | The registry exists, but completion/history ergonomics are still shallow. |
 | T-006 | Add script/runtime wrappers for the first debugger command families on top of `swat-api`. | Preserve the public-API boundary. |

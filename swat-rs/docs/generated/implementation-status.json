@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 2,
-    "pending": 19,
+    "done": 3,
+    "pending": 18,
     "blocked": 0
   },
   "tasks": [
@@ -29,12 +29,12 @@
     },
     {
       "task": "T-003",
-      "status": "pending",
+      "status": "done",
       "milestone": "M1",
       "description": "Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "`source show` and `source file` exist, but broader source-navigation ergonomics are still missing."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "3834ac16",
+      "notes": "`swat-api` now catalogs source files and direct file views, and both shell and TUI expose `source files` / `source view` workflows."
     },
     {
       "task": "T-004",
