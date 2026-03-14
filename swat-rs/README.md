@@ -15,10 +15,15 @@ The canonical agent handoff documents now live at the workspace root:
 - `AGENTS.md`
 - `IMPLEMENTATION_PLAN.md`
 - `CONTINUATION_PROMPT.md`
+- `PROJECT_COMPLETION_PLAN.md`
+- `PROJECT_CONTINUATION_PROMPT.md`
 
 ## Current status
 
 `swat-rs v1` is complete.
+
+The whole project is not yet complete relative to legacy PC/GEOS Swat parity.
+For the remaining post-`v1` work, use `PROJECT_COMPLETION_PLAN.md`.
 
 The workspace now spans the required end-to-end debugger surface for `v1`:
 
@@ -53,6 +58,8 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/architecture/agent-event-protocol.md`
 - `IMPLEMENTATION_PLAN.md`
 - `CONTINUATION_PROMPT.md`
+- `PROJECT_COMPLETION_PLAN.md`
+- `PROJECT_CONTINUATION_PROMPT.md`
 - `AGENTS.md`
 - `docs/adrs/0001-core-boundaries.md`
 - `docs/adrs/0002-phase-1-substrate-validation.md`

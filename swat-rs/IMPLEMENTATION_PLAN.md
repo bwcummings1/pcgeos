@@ -1,6 +1,13 @@
 # IMPLEMENTATION_PLAN
 
-This is the canonical implementation plan for completing `swat-rs`.
+This is the canonical implementation plan for completing `swat-rs v1`.
+
+`v1` is now complete.
+
+If the task is to complete the whole project beyond `v1` and close the
+remaining legacy-Swat parity gap, use:
+
+- `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md`
 
 If any other planning document conflicts with this file, this file wins.
 

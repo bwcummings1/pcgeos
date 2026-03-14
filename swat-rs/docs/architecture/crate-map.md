@@ -97,3 +97,19 @@
 
 - `swat-adapter-http`
 - `swat-adapter-pcgeos`
+
+## Post-v1 full-completion targets
+
+- optional `swat-format-pcgeos`
+  Support crate or crates for PC/GEOS VM, symbol, geode, and related object
+  formats if that keeps `swat-adapter-pcgeos` and shared APIs clean.
+
+- expanded `swat-command` and `swat-script`
+  The likely landing zone for the missing debugger command ecology, command
+  families, help metadata, autoload behavior, and script-package migration from
+  the legacy Tcl surface.
+
+- expanded `swat-ui-tui`
+  The likely landing zone for debugger-grade panes covering stack, breakpoints,
+  patients, handles, source navigation, replay, and other long-session
+  operator workflows.

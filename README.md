@@ -18,6 +18,8 @@ Key entry points:
 - `swat-rs/AGENTS.md`
 - `swat-rs/IMPLEMENTATION_PLAN.md`
 - `swat-rs/CONTINUATION_PROMPT.md`
+- `swat-rs/PROJECT_COMPLETION_PLAN.md`
+- `swat-rs/PROJECT_CONTINUATION_PROMPT.md`
 
 ![Screenshot showing a typical GEOS desktop](TechDocs/Markdown/Art/title-screenshot.png)
 

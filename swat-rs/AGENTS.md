@@ -9,13 +9,15 @@ Before substantial implementation, read in this order:
 
 1. `/home/ubuntu/pcgeos/swat-rs/README.md`
 2. `/home/ubuntu/pcgeos/swat-rs/IMPLEMENTATION_PLAN.md`
-3. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/phase-0-spec.md`
-4. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/reference-map.md`
-5. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/legacy-subsystem-inventory.md`
-6. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/execution-strategy.md`
-7. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/crate-map.md`
-8. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/agent-event-protocol.md`
-9. all ADRs in `/home/ubuntu/pcgeos/swat-rs/docs/adrs/` in sorted order
+3. `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md` when the task is
+   to finish the entire project rather than maintain `v1`
+4. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/phase-0-spec.md`
+5. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/reference-map.md`
+6. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/legacy-subsystem-inventory.md`
+7. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/execution-strategy.md`
+8. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/crate-map.md`
+9. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/agent-event-protocol.md`
+10. all ADRs in `/home/ubuntu/pcgeos/swat-rs/docs/adrs/` in sorted order
 
 ## Core rules
 
@@ -30,7 +32,10 @@ Before substantial implementation, read in this order:
 ## Execution policy
 
 - use `/home/ubuntu/pcgeos/swat-rs/IMPLEMENTATION_PLAN.md` as the canonical
-  finish-line document
+  finish-line document for `v1`
+- use `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md` as the
+  canonical finish-line document when the task is to complete the whole
+  project beyond `v1`
 - implement milestones in plan order unless blocked
 - update docs and ADRs when public or architectural behavior changes
 - run focused tests during iteration and full `cargo test` before closing a

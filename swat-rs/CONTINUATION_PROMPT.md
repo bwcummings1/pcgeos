@@ -1,5 +1,12 @@
 You are continuing implementation of `swat-rs` inside `/home/ubuntu/pcgeos/swat-rs`.
 
+This prompt is the historical `v1` continuation prompt.
+
+`swat-rs v1` is now complete. If the task is to finish the whole project
+beyond `v1`, use:
+
+- `/home/ubuntu/pcgeos/swat-rs/PROJECT_CONTINUATION_PROMPT.md`
+
 Your job is not to redesign the project. Your job is to preserve contextual
 coherence with legacy PC/GEOS Swat, consume the existing plan/docs/code, and
 continue implementation until `swat-rs v1` is actually complete.

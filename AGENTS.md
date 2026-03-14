@@ -16,6 +16,8 @@ Read these first:
 1. `/home/ubuntu/pcgeos/swat-rs/AGENTS.md`
 2. `/home/ubuntu/pcgeos/swat-rs/README.md`
 3. `/home/ubuntu/pcgeos/swat-rs/IMPLEMENTATION_PLAN.md`
+4. `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md` when the goal is
+   to complete the entire project rather than maintain `v1`
 
 ## Legacy tree policy
 
