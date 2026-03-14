@@ -1,0 +1,18 @@
+[package]
+name = "swat-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+swat-core = { path = "../swat-core" }
+swat-expr = { path = "../swat-expr" }
+swat-schema = { path = "../swat-schema" }
+swat-session = { path = "../swat-session" }
+swat-store = { path = "../swat-store" }
+swat-value = { path = "../swat-value" }
+
+[dev-dependencies]
+swat-adapter-local = { path = "../swat-adapter-local" }
+swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-adapter-agent = { path = "../swat-adapter-agent" }

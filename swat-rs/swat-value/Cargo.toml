@@ -1,0 +1,15 @@
+[package]
+name = "swat-value"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+swat-core = { path = "../swat-core" }
+swat-store = { path = "../swat-store" }
+
+[dev-dependencies]
+swat-adapter-local = { path = "../swat-adapter-local" }
+swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-session = { path = "../swat-session" }

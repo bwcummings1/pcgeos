@@ -1,0 +1,18 @@
+[package]
+name = "swat-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rhai.workspace = true
+swat-api = { path = "../swat-api" }
+swat-core = { path = "../swat-core" }
+swat-expr = { path = "../swat-expr" }
+swat-source = { path = "../swat-source" }
+swat-store = { path = "../swat-store" }
+
+[dev-dependencies]
+swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-adapter-python = { path = "../swat-adapter-python" }
+swat-session = { path = "../swat-session" }

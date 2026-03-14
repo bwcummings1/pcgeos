@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "swat-core",
+    "swat-protocol",
+    "swat-store",
+    "swat-replay",
+    "swat-session",
+    "swat-adapter-mock",
+    "swat-adapter-local",
+    "swat-adapter-python",
+    "swat-agent-protocol",
+    "swat-adapter-agent",
+    "swat-control",
+    "swat-value",
+    "swat-api",
+    "swat-command",
+    "swat-schema",
+    "swat-expr",
+    "swat-resolver",
+    "swat-source",
+    "swat-script",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
+rhai = "1.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

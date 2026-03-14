@@ -3,6 +3,22 @@ This repository is the offical place to hold all the source codes around the PC/
 interface and its sophisticated applications. It is the source to build SDK and release version of PC/GEOS.
 It is the place to collaborate on further developments.
 
+## Modern swat-rs workspace
+
+This repository also contains the modern Rust debugger rewrite under:
+
+- `swat-rs/`
+
+Start there if you are working on the new debugger platform rather than the
+historical PC/GEOS build.
+
+Key entry points:
+
+- `swat-rs/README.md`
+- `swat-rs/AGENTS.md`
+- `swat-rs/IMPLEMENTATION_PLAN.md`
+- `swat-rs/CONTINUATION_PROMPT.md`
+
 ![Screenshot showing a typical GEOS desktop](TechDocs/Markdown/Art/title-screenshot.png)
 
 The base of this repository is the source code used to build Breadbox Ensemble 4.13 reduced by some modules identified as critical in regard to the license choosen for the repository.

@@ -1,0 +1,21 @@
+[package]
+name = "swat-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+swat-adapter-agent = { path = "../swat-adapter-agent" }
+swat-adapter-local = { path = "../swat-adapter-local" }
+swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-api = { path = "../swat-api" }
+swat-control = { path = "../swat-control" }
+swat-core = { path = "../swat-core" }
+swat-expr = { path = "../swat-expr" }
+swat-script = { path = "../swat-script" }
+swat-session = { path = "../swat-session" }
+swat-store = { path = "../swat-store" }
+
+[dev-dependencies]

@@ -1,0 +1,9 @@
+[package]
+name = "swat-adapter-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+swat-core = { path = "../swat-core" }
+

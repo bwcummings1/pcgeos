@@ -1,0 +1,14 @@
+[package]
+name = "swat-source"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+swat-core = { path = "../swat-core" }
+swat-store = { path = "../swat-store" }
+swat-value = { path = "../swat-value" }
+
+[dev-dependencies]
+swat-adapter-python = { path = "../swat-adapter-python" }
+swat-session = { path = "../swat-session" }

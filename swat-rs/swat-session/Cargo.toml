@@ -1,0 +1,20 @@
+[package]
+name = "swat-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+swat-core = { path = "../swat-core" }
+swat-protocol = { path = "../swat-protocol" }
+swat-replay = { path = "../swat-replay" }
+swat-store = { path = "../swat-store" }
+
+[dev-dependencies]
+swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-adapter-local = { path = "../swat-adapter-local" }
+swat-adapter-python = { path = "../swat-adapter-python" }
+swat-adapter-agent = { path = "../swat-adapter-agent" }
+swat-control = { path = "../swat-control" }
+swat-expr = { path = "../swat-expr" }
+swat-value = { path = "../swat-value" }
