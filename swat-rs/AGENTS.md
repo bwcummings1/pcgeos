@@ -37,9 +37,18 @@ Before substantial implementation, read in this order:
   canonical finish-line document when the task is to complete the whole
   project beyond `v1`
 - implement milestones in plan order unless blocked
+- when working beyond `v1`, treat the `## Current Cycle Queue (...)` section in
+  `PROJECT_COMPLETION_PLAN.md` as the authoritative execution status record
 - update docs and ADRs when public or architectural behavior changes
 - run focused tests during iteration and full `cargo test` before closing a
   milestone
+- refresh queue artifacts with:
+  - `python3 scripts/check-implementation-status.py`
+  - `python3 scripts/render-implementation-status.py`
+- after each completed queue task: update the queue row, refresh artifacts,
+  commit, push, and continue immediately to the next task
+- if blocked: mark the task `blocked` and record the exact blocker and next
+  action in the queue before pausing
 
 ## Validation baseline
 

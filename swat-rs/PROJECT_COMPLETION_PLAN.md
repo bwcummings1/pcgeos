@@ -42,6 +42,63 @@ The missing `~60%` is concentrated in:
 - more serious operator ergonomics around history, help, completion, and
   debugger-specific views
 
+## Continuous execution harness
+
+The active queue in this file is the authoritative execution record for the
+remaining post-`v1` work.
+
+Use these commands:
+
+```bash
+python3 scripts/check-implementation-status.py
+python3 scripts/check-implementation-status.py --write-artifact
+python3 scripts/render-implementation-status.py
+python3 scripts/render-implementation-status.py --check
+```
+
+Execution rules:
+
+1. Work the active queue in order unless a hard dependency forces resequencing.
+2. After each completed task:
+   - update its queue row in this file
+   - refresh the generated status artifacts
+   - run targeted validation
+   - run full `cargo test`
+   - commit the task
+   - push the branch
+   - continue immediately to the next task
+3. If blocked, set the task status to `blocked` and record the blocker plus the
+   exact next action in the `Notes` column before pausing.
+4. Do not treat a task summary or milestone summary as a stopping point.
+5. The generated artifacts under `docs/generated/` must stay aligned with the
+   current queue section.
+
+## Current Cycle Queue (T-001..T-021)
+
+| Task | Status | Milestone | Description | Branch | Commit | Notes |
+|------|--------|-----------|-------------|--------|--------|-------|
+| T-001 | done | M1 | Add a shared command/help registry and first debugger-family aliases for `stack`, `source`, and `breakpoint`. | swat-rs-full-completion-plan | 986f37e0 | Registry is now shared by shell help and TUI discovery; ADR 0026 landed. |
+| T-002 | pending | M1 | Add frame-oriented stack inspection APIs and shell/TUI workflows on top of the current boundary-span view. | - | - | Boundary spans exist, but debugger-grade frame objects and stack workflows do not. |
+| T-003 | pending | M1 | Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup. | - | - | `source show` and `source file` exist, but broader source-navigation ergonomics are still missing. |
+| T-004 | pending | M1 | Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output. | - | - | Keep using shared control APIs; do not fork a second command surface. |
+| T-005 | pending | M1 | Add shared help/completion/history/discovery metadata across shell and TUI. | - | - | The registry exists, but completion/history ergonomics are still shallow. |
+| T-006 | pending | M1 | Add script/runtime wrappers for the first debugger command families on top of `swat-api`. | - | - | Preserve the public-API boundary. |
+| T-007 | pending | M1 | Reconcile Milestone 1 docs, demos, and validation evidence until the milestone exit criteria are materially satisfied. | - | - | Close M1 before moving to advanced breakpoint semantics. |
+| T-008 | pending | M2 | Add grouped breakpoint definitions, reusable predicates, and richer stop-reason modeling. | - | - | Replace the current trigger-backed feel with a debugger-grade break model. |
+| T-009 | pending | M2 | Add watchpoints for values, objects, resources, and lifecycle-aware load/time break conditions. | - | - | Use the legacy breakpoint Tcl/C stack as reference, not as implementation. |
+| T-010 | pending | M2 | Expose advanced breakpoint/watchpoint management across shell, TUI, script, and public API. | - | - | No adapter-private or UI-private control channels. |
+| T-011 | pending | M3 | Add typed frame/local/register inspection primitives for modern targets and shared APIs. | - | - | Start modern-target-first, then widen toward PC/GEOS-specific entities. |
+| T-012 | pending | M3 | Add typed patient/handle/resource/object inspection models and debugger-native presentations. | - | - | Keep `swat-core` target-neutral while enriching shared value/resolver layers. |
+| T-013 | pending | M3 | Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries. | - | - | Preserve operator-friendly formatting across shell and TUI. |
+| T-014 | pending | M4 | Add package-oriented script loading and shared command metadata integration. | - | - | Recover conceptual autoload parity without recreating Tcl chaos. |
+| T-015 | pending | M4 | Migrate the highest-value legacy Tcl command families onto the new runtime and help surface. | - | - | Focus on stack/patient/process/object/source helpers first. |
+| T-016 | pending | M5 | Implement PC/GEOS VM, symbol, geode, and object format readers or bridges. | - | - | Fixture-backed first if live target automation is fragile. |
+| T-017 | pending | M5 | Model patient/handle/resource/geode/source relationships over real repository artifacts. | - | - | Use real repository fixtures rather than synthetic placeholders. |
+| T-018 | pending | M6 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | - | - | Support replay-fixture mode first if necessary, then live target/emulator paths. |
+| T-019 | pending | M6 | Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos. | - | - | Cover registers, memory, stack, patient, handle, and source flows. |
+| T-020 | pending | M7 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | - | - | Make long-session workflows practical instead of demo-oriented. |
+| T-021 | pending | M8 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | - | - | This is the final closeout gate, not a cosmetic polish task. |
+
 ## Canonical reference set
 
 Read these before major implementation:
@@ -571,29 +628,29 @@ Do not call the whole project complete until all of the following are true:
 
 Repeat this loop until the `Definition of Done` above is satisfied:
 
-1. choose the next milestone in order
-2. inspect only the files relevant to that milestone
+1. choose the next pending or blocked task in the current queue
+2. inspect only the files relevant to that task
 3. implement one coherent slice
 4. add or update focused tests and demos
 5. update docs and ADRs if public behavior or architecture changed
-6. run targeted tests first
-7. run full `cargo test`
-8. keep the tree clean at milestone boundaries
-9. then move to the next slice
+6. update the queue row in this file
+7. run `python3 scripts/render-implementation-status.py`
+8. run targeted tests first
+9. run full `cargo test`
+10. commit and push the task
+11. keep the tree clean at task and milestone boundaries
+12. then move directly to the next slice
 
 ## Immediate next task
 
-Start with Milestone 1.
+Resume with `T-002`.
 
-The highest-value first slice is:
+The highest-value next slice is:
 
-- formalize command/help metadata as a shared registry rather than shell-only
-  strings
-- add the first debugger command families on top of existing APIs:
-  - `stack`
-  - `source`
-  - `breakpoint`
-- wire the same metadata into shell help and TUI command discovery
+- add frame-oriented stack inspection APIs on top of the current boundary-span
+  view
+- expose those flows through the shared command registry, shell, and TUI
+- keep the implementation on top of shared APIs rather than shell-local or
+  TUI-local logic
 
-That is the cleanest way to begin closing the remaining parity gap without
-damaging the stable `v1` substrate.
+That is the cleanest continuation of Milestone 1 now that `T-001` is complete.

@@ -25,6 +25,14 @@ The canonical agent handoff documents now live at the workspace root:
 The whole project is not yet complete relative to legacy PC/GEOS Swat parity.
 For the remaining post-`v1` work, use `PROJECT_COMPLETION_PLAN.md`.
 
+The post-`v1` branch also now carries a continuous execution harness:
+
+- the active queue lives in `PROJECT_COMPLETION_PLAN.md`
+- machine-readable status lives in `docs/generated/implementation-status.json`
+- human-readable queue summary lives in `docs/generated/current-queue-summary.md`
+- status scripts live in `scripts/check-implementation-status.py` and
+  `scripts/render-implementation-status.py`
+
 The workspace now spans the required end-to-end debugger surface for `v1`:
 
 - live mock/local/Python/agent targets
@@ -61,6 +69,8 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `PROJECT_COMPLETION_PLAN.md`
 - `PROJECT_CONTINUATION_PROMPT.md`
 - `AGENTS.md`
+- `docs/generated/implementation-status.json`
+- `docs/generated/current-queue-summary.md`
 - `docs/adrs/0001-core-boundaries.md`
 - `docs/adrs/0002-phase-1-substrate-validation.md`
 - `docs/adrs/0003-first-live-adapter-local-process.md`
@@ -264,6 +274,21 @@ Run the trigger-control demo with:
 Run the live command shell with:
 
 `cargo run -p swat-command -- mock`
+
+## Continuous execution harness
+
+The full-completion branch is meant to run as a continuous queue, not as a
+single-slice prompt.
+
+Validate and refresh the execution record with:
+
+`python3 scripts/check-implementation-status.py`
+
+`python3 scripts/render-implementation-status.py`
+
+Verify the generated queue artifacts are current with:
+
+`python3 scripts/render-implementation-status.py --check`
 
 Preload a trigger file on shell startup with:
 

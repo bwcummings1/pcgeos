@@ -1,0 +1,202 @@
+{
+  "plan": "PROJECT_COMPLETION_PLAN.md",
+  "queue": "T-001..T-021",
+  "queueHeading": "## Current Cycle Queue (T-001..T-021)",
+  "summary": {
+    "total": 21,
+    "done": 1,
+    "pending": 20,
+    "blocked": 0
+  },
+  "tasks": [
+    {
+      "task": "T-001",
+      "status": "done",
+      "milestone": "M1",
+      "description": "Add a shared command/help registry and first debugger-family aliases for `stack`, `source`, and `breakpoint`.",
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "986f37e0",
+      "notes": "Registry is now shared by shell help and TUI discovery; ADR 0026 landed."
+    },
+    {
+      "task": "T-002",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Add frame-oriented stack inspection APIs and shell/TUI workflows on top of the current boundary-span view.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Boundary spans exist, but debugger-grade frame objects and stack workflows do not."
+    },
+    {
+      "task": "T-003",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "`source show` and `source file` exist, but broader source-navigation ergonomics are still missing."
+    },
+    {
+      "task": "T-004",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Keep using shared control APIs; do not fork a second command surface."
+    },
+    {
+      "task": "T-005",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Add shared help/completion/history/discovery metadata across shell and TUI.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "The registry exists, but completion/history ergonomics are still shallow."
+    },
+    {
+      "task": "T-006",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Add script/runtime wrappers for the first debugger command families on top of `swat-api`.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Preserve the public-API boundary."
+    },
+    {
+      "task": "T-007",
+      "status": "pending",
+      "milestone": "M1",
+      "description": "Reconcile Milestone 1 docs, demos, and validation evidence until the milestone exit criteria are materially satisfied.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Close M1 before moving to advanced breakpoint semantics."
+    },
+    {
+      "task": "T-008",
+      "status": "pending",
+      "milestone": "M2",
+      "description": "Add grouped breakpoint definitions, reusable predicates, and richer stop-reason modeling.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Replace the current trigger-backed feel with a debugger-grade break model."
+    },
+    {
+      "task": "T-009",
+      "status": "pending",
+      "milestone": "M2",
+      "description": "Add watchpoints for values, objects, resources, and lifecycle-aware load/time break conditions.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Use the legacy breakpoint Tcl/C stack as reference, not as implementation."
+    },
+    {
+      "task": "T-010",
+      "status": "pending",
+      "milestone": "M2",
+      "description": "Expose advanced breakpoint/watchpoint management across shell, TUI, script, and public API.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "No adapter-private or UI-private control channels."
+    },
+    {
+      "task": "T-011",
+      "status": "pending",
+      "milestone": "M3",
+      "description": "Add typed frame/local/register inspection primitives for modern targets and shared APIs.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Start modern-target-first, then widen toward PC/GEOS-specific entities."
+    },
+    {
+      "task": "T-012",
+      "status": "pending",
+      "milestone": "M3",
+      "description": "Add typed patient/handle/resource/object inspection models and debugger-native presentations.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Keep `swat-core` target-neutral while enriching shared value/resolver layers."
+    },
+    {
+      "task": "T-013",
+      "status": "pending",
+      "milestone": "M3",
+      "description": "Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Preserve operator-friendly formatting across shell and TUI."
+    },
+    {
+      "task": "T-014",
+      "status": "pending",
+      "milestone": "M4",
+      "description": "Add package-oriented script loading and shared command metadata integration.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Recover conceptual autoload parity without recreating Tcl chaos."
+    },
+    {
+      "task": "T-015",
+      "status": "pending",
+      "milestone": "M4",
+      "description": "Migrate the highest-value legacy Tcl command families onto the new runtime and help surface.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Focus on stack/patient/process/object/source helpers first."
+    },
+    {
+      "task": "T-016",
+      "status": "pending",
+      "milestone": "M5",
+      "description": "Implement PC/GEOS VM, symbol, geode, and object format readers or bridges.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Fixture-backed first if live target automation is fragile."
+    },
+    {
+      "task": "T-017",
+      "status": "pending",
+      "milestone": "M5",
+      "description": "Model patient/handle/resource/geode/source relationships over real repository artifacts.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Use real repository fixtures rather than synthetic placeholders."
+    },
+    {
+      "task": "T-018",
+      "status": "pending",
+      "milestone": "M6",
+      "description": "Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Support replay-fixture mode first if necessary, then live target/emulator paths."
+    },
+    {
+      "task": "T-019",
+      "status": "pending",
+      "milestone": "M6",
+      "description": "Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Cover registers, memory, stack, patient, handle, and source flows."
+    },
+    {
+      "task": "T-020",
+      "status": "pending",
+      "milestone": "M7",
+      "description": "Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "Make long-session workflows practical instead of demo-oriented."
+    },
+    {
+      "task": "T-021",
+      "status": "pending",
+      "milestone": "M8",
+      "description": "Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied.",
+      "branch": "-",
+      "commit": "-",
+      "notes": "This is the final closeout gate, not a cosmetic polish task."
+    }
+  ]
+}

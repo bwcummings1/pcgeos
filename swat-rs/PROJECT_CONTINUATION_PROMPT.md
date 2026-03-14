@@ -25,6 +25,11 @@ Read these first, in order:
 10. `/home/ubuntu/pcgeos/swat-rs/docs/architecture/agent-event-protocol.md`
 11. all ADRs in `/home/ubuntu/pcgeos/swat-rs/docs/adrs/` in sorted order
 
+Then run the harness commands:
+
+- `python3 scripts/check-implementation-status.py`
+- `python3 scripts/render-implementation-status.py --check`
+
 Then inspect the main implementation seams:
 
 - `/home/ubuntu/pcgeos/swat-rs/swat-core/src/lib.rs`
@@ -68,6 +73,15 @@ Hard constraints:
 10. Keep the workspace green. Run narrow tests while iterating and full
     `cargo test` before closing a milestone.
 11. Keep the tree clean at milestone boundaries.
+12. After each completed task in the active queue:
+    - update its row in `PROJECT_COMPLETION_PLAN.md`
+    - refresh `docs/generated/implementation-status.json`
+    - refresh `docs/generated/current-queue-summary.md`
+    - commit the task
+    - push the branch
+    - continue immediately to the next task
+13. If blocked, mark the task `blocked` in the active queue and record the
+    exact blocker plus next action before pausing.
 
 Execution order:
 
@@ -75,19 +89,21 @@ Follow the milestone sequence in:
 
 - `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md`
 
+Treat the `## Current Cycle Queue (...)` section in that file as the
+authoritative execution record.
+
 Do not skip to later milestones before the earlier ones are materially closed.
 
 Immediate next task:
 
-Start with Milestone 1, and begin with the highest-value first slice:
+Resume with `T-002` in the active queue and begin with the highest-value next
+slice:
 
-- formalize command/help metadata as a shared registry
-- add the first debugger command families on top of existing APIs:
-  - `stack`
-  - `source`
-  - `breakpoint`
-- wire the same metadata into shell help and TUI discovery instead of keeping
-  it shell-local
+- add frame-oriented stack inspection APIs on top of the current boundary-span
+  view
+- expose those flows through the shared command registry, shell, and TUI
+- keep the implementation on top of shared APIs rather than shell-local or
+  TUI-local logic
 
 Validation discipline for every slice:
 
