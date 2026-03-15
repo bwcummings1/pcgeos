@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 14,
-    "pending": 7,
+    "done": 15,
+    "pending": 6,
     "blocked": 0
   },
   "tasks": [
@@ -137,12 +137,12 @@
     },
     {
       "task": "T-015",
-      "status": "pending",
+      "status": "done",
       "milestone": "M4",
       "description": "Migrate the highest-value legacy Tcl command families onto the new runtime and help surface.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Focus on stack/patient/process/object/source helpers first."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "1f6fe82b",
+      "notes": "Legacy-style stack/source/patient/process/object helpers now ride on the shared runtime, help registry, and TUI surface."
     },
     {
       "task": "T-016",

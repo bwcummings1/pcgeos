@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `14/21 done`
-- Pending: `7`
+- Progress: `15/21 done`
+- Pending: `6`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -25,7 +25,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-012 | done | M3 | swat-rs-full-completion-plan | 39e68bfb |
 | T-013 | done | M3 | swat-rs-full-completion-plan | 7275b0ca |
 | T-014 | done | M4 | swat-rs-full-completion-plan | cc3fb524 |
-| T-015 | pending | M4 | - | - |
+| T-015 | done | M4 | swat-rs-full-completion-plan | 1f6fe82b |
 | T-016 | pending | M5 | - | - |
 | T-017 | pending | M5 | - | - |
 | T-018 | pending | M6 | - | - |
@@ -51,7 +51,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-012 | Add typed patient/handle/resource/object inspection models and debugger-native presentations. | Shared value/resolver/API layers now project typed patient/handle/resource/object models, and shell/TUI/script surfaces expose debugger-native inspection without changing `swat-core`. |
 | T-013 | Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries. | Query fields now cover typed target entities and source lines, shared APIs project value history and source-function traversal, and shell/TUI/script surfaces expose the same debugger-native workflows. |
 | T-014 | Add package-oriented script loading and shared command metadata integration. | Built-in script packages now autoload over the public API, and shell help/search/completion reuse the same package metadata. |
-| T-015 | Migrate the highest-value legacy Tcl command families onto the new runtime and help surface. | Focus on stack/patient/process/object/source helpers first. |
+| T-015 | Migrate the highest-value legacy Tcl command families onto the new runtime and help surface. | Legacy-style stack/source/patient/process/object helpers now ride on the shared runtime, help registry, and TUI surface. |
 | T-016 | Implement PC/GEOS VM, symbol, geode, and object format readers or bridges. | Fixture-backed first if live target automation is fragile. |
 | T-017 | Model patient/handle/resource/geode/source relationships over real repository artifacts. | Use real repository fixtures rather than synthetic placeholders. |
 | T-018 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | Support replay-fixture mode first if necessary, then live target/emulator paths. |
