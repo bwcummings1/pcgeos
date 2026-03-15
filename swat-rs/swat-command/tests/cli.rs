@@ -139,6 +139,19 @@ fn mock_cli_can_list_and_show_snapshots() {
 }
 
 #[test]
+fn mock_cli_exposes_dashboard_and_history_views() {
+    let stdout = run_cli(
+        &["mock"],
+        "attach\nresume\npump\ndashboard control\nhistory 4\nexit\n",
+    );
+
+    assert!(stdout.contains("dashboard control"));
+    assert!(stdout.contains("[breakpoints]"));
+    assert!(stdout.contains("history 4"));
+    assert!(stdout.contains("dashboard control"));
+}
+
+#[test]
 fn pcgeos_cli_exposes_stack_entity_memory_and_source_flows() {
     let show_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

@@ -7,6 +7,7 @@ fn mock_headless_dashboard_renders_live_panes() {
 
     let rendered = run_headless(config).unwrap();
     assert!(rendered.contains("swat-ui-tui"));
+    assert!(rendered.contains("dashboard=execution"));
     assert!(rendered.contains("Events"));
     assert!(rendered.contains("Stack / Entities"));
     assert!(rendered.contains("Source"));
@@ -69,7 +70,7 @@ fn pcgeos_headless_dashboard_attaches_and_renders_fixture_state() {
 
     let rendered = run_headless(config).unwrap();
     assert!(rendered.contains("pcgeos-fixture"));
-    assert!(rendered.contains("Execution"));
+    assert!(rendered.contains("dashboard=execution"));
     assert!(rendered.contains("GeoPointApp::OpenDocument"));
     assert!(rendered.contains("show.goc"));
 }

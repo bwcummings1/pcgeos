@@ -5,8 +5,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_command::{
-    BreakpointConditionInput, Command, CommandHost, CommandSurface, command_completions,
-    command_help, command_search, parse_command,
+    BreakpointConditionInput, Command, CommandHost, CommandSurface, DashboardLayout,
+    command_completions, command_help, command_search, load_command_history_from_path,
+    parse_command, store_command_history_to_path,
 };
 use swat_store::InMemoryStore;
 
@@ -52,6 +53,24 @@ fn mock_command_host_can_attach_pump_query_and_script() {
     let help = host.execute("help query").unwrap();
     assert!(help.summary.contains("help query"));
     assert!(help.lines.iter().any(|line| line.contains("event.id")));
+
+    let dashboard = host.execute("dashboard control").unwrap();
+    assert!(dashboard.summary.contains("dashboard control"));
+    assert!(
+        dashboard
+            .lines
+            .iter()
+            .any(|line| line.contains("[breakpoints]"))
+    );
+
+    let history = host.execute("history 3").unwrap();
+    assert!(history.summary.contains("3 command(s)"));
+    assert!(
+        history
+            .lines
+            .iter()
+            .any(|line| line.contains("dashboard control"))
+    );
 
     let scripted = host.execute("script ctx.event_count()").unwrap();
     assert_eq!(scripted.lines.len(), 1);
@@ -194,6 +213,14 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("help search <needle>"))
     );
+    let dashboard_help = command_help(Some("dashboard"), CommandSurface::Shell);
+    assert!(dashboard_help.summary.contains("help dashboard"));
+    assert!(
+        dashboard_help
+            .lines
+            .iter()
+            .any(|line| line.contains("dashboard [execution|control|target]"))
+    );
 
     let search = command_search("break", CommandSurface::Tui);
     assert!(search.summary.contains("help search break"));
@@ -225,6 +252,8 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
     assert!(tui_completions.contains(&"source show <event_id> [before] [after]".to_string()));
     let package_completions = command_completions("script package load pa", CommandSurface::Shell);
     assert!(package_completions.contains(&"script package load patient".to_string()));
+    let dashboard_completions = command_completions("dashboard c", CommandSurface::Shell);
+    assert!(dashboard_completions.contains(&"dashboard control".to_string()));
 
     assert_eq!(parse_command("stack").unwrap(), Command::Spans);
     assert_eq!(
@@ -242,6 +271,16 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         Command::Backtrace { limit: Some(5) }
     );
     assert_eq!(parse_command("where").unwrap(), Command::Where);
+    assert_eq!(
+        parse_command("dashboard control").unwrap(),
+        Command::Dashboard {
+            layout: DashboardLayout::Control
+        }
+    );
+    assert_eq!(
+        parse_command("history 12").unwrap(),
+        Command::History { limit: Some(12) }
+    );
     assert_eq!(
         parse_command("func").unwrap(),
         Command::Function { name: None }
@@ -484,6 +523,27 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
                 .create_snapshot("state changed"),
         }
     );
+}
+
+#[test]
+fn command_history_helpers_roundtrip_entries() {
+    let path = std::env::temp_dir().join(format!(
+        "swat-command-history-{}-{}.txt",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let entries = vec![
+        "attach".to_string(),
+        "dashboard control".to_string(),
+        "history 5".to_string(),
+    ];
+    store_command_history_to_path(&path, &entries).unwrap();
+    let loaded = load_command_history_from_path(&path, 16).unwrap();
+    assert_eq!(loaded, entries);
+    let _ = fs::remove_file(path);
 }
 
 #[test]

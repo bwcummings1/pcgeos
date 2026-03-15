@@ -30,6 +30,24 @@ struct CommandFamily {
 
 const COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
+        key: "dashboard",
+        synopsis: "dashboard [execution|control|target]",
+        summary: "switch or render debugger-grade dashboard layouts for long sessions",
+        aliases: &[
+            "dashboard execution",
+            "dashboard control",
+            "dashboard target",
+        ],
+        tui_supported: true,
+    },
+    CommandDescriptor {
+        key: "history",
+        synopsis: "history [count]",
+        summary: "show recent command history, including persisted entries when available",
+        aliases: &[],
+        tui_supported: true,
+    },
+    CommandDescriptor {
         key: "attach",
         synopsis: "attach",
         summary: "attach to the configured target",
@@ -536,6 +554,23 @@ const COMMANDS: &[CommandDescriptor] = &[
 ];
 
 const FAMILIES: &[CommandFamily] = &[
+    CommandFamily {
+        topic: "dashboard",
+        aliases: &["history", "ui"],
+        summary: "move between debugger-oriented dashboard layouts and inspect recent command history",
+        commands: &["dashboard", "history"],
+        notes: &[
+            "Use `dashboard execution` for the live stack/source/artifact view, `dashboard control` for breakpoints/watchpoints/snapshots, and `dashboard target` for stack plus patient/object/source catalogs.",
+            "In the TUI, `1`, `2`, and `3` switch those layouts without entering command mode.",
+            "Command history is persisted per surface when a writable state directory is available, so long sessions survive across restarts instead of resetting to an empty in-memory list.",
+        ],
+        examples: &[
+            "dashboard",
+            "dashboard control",
+            "dashboard target",
+            "history 20",
+        ],
+    },
     CommandFamily {
         topic: "session",
         aliases: &["status", "control"],

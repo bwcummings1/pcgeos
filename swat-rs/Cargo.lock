@@ -1011,6 +1011,7 @@ dependencies = [
  "swat-control",
  "swat-core",
  "swat-expr",
+ "swat-replay",
  "swat-session",
  "swat-source",
  "swat-store",

@@ -15,7 +15,10 @@ use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_adapter_pcgeos::{PcGeosAdapter, bundled_fixture_path};
-use swat_command::{CommandHost, CommandSurface, command_completions};
+use swat_command::{
+    CommandHost, CommandSurface, DEFAULT_COMMAND_HISTORY_LIMIT, command_completions,
+    load_persisted_command_history, store_persisted_command_history,
+};
 use swat_core::{SwatError, SwatResult, TargetAdapter};
 use swat_store::{FileStore, InMemoryStore, SwatStore};
 
@@ -94,6 +97,15 @@ fn run_interactive_shell(mut host: CommandHost) -> Result<(), Box<dyn std::error
         .build();
     let mut editor = Editor::<ShellHelper, DefaultHistory>::with_config(config)?;
     editor.set_helper(Some(ShellHelper));
+    match load_persisted_command_history(CommandSurface::Shell, DEFAULT_COMMAND_HISTORY_LIMIT) {
+        Ok(entries) => {
+            host.seed_command_history(entries.clone());
+            for entry in &entries {
+                let _ = editor.add_history_entry(entry);
+            }
+        }
+        Err(error) => eprintln!("warning: {error}"),
+    }
 
     loop {
         match editor.readline("swat> ") {
@@ -107,6 +119,12 @@ fn run_interactive_shell(mut host: CommandHost) -> Result<(), Box<dyn std::error
                 }
                 editor.add_history_entry(command)?;
                 execute_shell_command(&mut host, command, false)?;
+                if let Err(error) = store_persisted_command_history(
+                    CommandSurface::Shell,
+                    &host.command_history_entries(),
+                ) {
+                    eprintln!("warning: {error}");
+                }
             }
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => break,
@@ -324,7 +342,8 @@ modes:
 
 shell:
   commands are read from stdin
-  interactive terminals support tab completion and in-session history
+  interactive terminals support tab completion and persisted history when a state directory is available
+  dashboard helpers: dashboard [execution|control|target], history [count]
   shell meta-commands: sleep <ms>, quit, exit
   --triggers preloads a saved trigger file at startup
   use 'help' or 'help search <needle>' for debugger commands

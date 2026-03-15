@@ -130,10 +130,10 @@ modes:
     load the bundled PC/GEOS replay fixture, or a custom fixture file, via swat-adapter-pcgeos
 
 tui:
-  interactive keys: q quit, : command, a attach, u pump, r resume, p pause, s step
-  command mode supports tab completion and in-session up/down history
+  interactive keys: q quit, : command, 1/2/3 dashboards, a attach, u pump, r resume, p pause, s step
+  command mode supports tab completion and persisted up/down history when a state directory is available
   command entry supports: help, attach, pump, pause, resume, step, snapshot,
-    help search <needle>, events [kind], query <expr>, correlation <id>, span <boundary_id>,
-    event <event_id>, clear
+    dashboard [execution|control|target], history [count], help search <needle>,
+    events [kind], query <expr>, correlation <id>, span <boundary_id>, event <event_id>, clear
   --headless renders one non-interactive dashboard snapshot for demos/tests"
 }

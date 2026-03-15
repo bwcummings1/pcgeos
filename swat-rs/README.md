@@ -286,8 +286,9 @@ including named predicates, group policies, persisted watchpoint definitions,
 load/time-gated watchpoint commands, and typed `stack locals` / `stack
 registers` workflows on the shared public API. It now also exposes typed
 `patient`, `handle`, `resource`, and `object` inspection commands over that
-same shared model, plus direct `value` history inspection and function-oriented
-source traversal.
+same shared model, plus direct `value` history inspection, function-oriented
+source traversal, persisted shell history, and `dashboard execution|control|target`
+views for long-session workflows.
 
 ## Phase 4 status
 
@@ -321,7 +322,8 @@ live command entry, and support for mock, local, agent, and PC/GEOS runtimes. It
 supports shared breakpoint/watchpoint command execution, typed frame-local and
 frame-register inspection commands, typed patient/handle/resource/object
 inspection commands plus event-pane entity projections, shared `value` history
-and `source functions` workflows, and a headless render mode for demos and
+and `source functions` workflows, persisted command history, switchable
+execution/control/target dashboards, and a headless render mode for demos and
 validation.
 
 ## Demo
@@ -353,6 +355,12 @@ Run the trigger-control demo with:
 Run the live command shell with:
 
 `cargo run -p swat-command -- mock`
+
+Then use:
+
+`dashboard control`
+
+`history 20`
 
 Run the PC/GEOS fixture shell with:
 
@@ -402,6 +410,8 @@ Run the TUI in interactive mode with:
 `cargo run -p swat-ui-tui -- mock`
 
 `cargo run -p swat-ui-tui -- pcgeos`
+
+Use `1`, `2`, and `3` or `:dashboard execution|control|target` to switch panes.
 
 Run the TUI headless demos with:
 

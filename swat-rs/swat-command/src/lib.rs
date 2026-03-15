@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod history;
 mod registry;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -27,6 +28,10 @@ use swat_script::{ScriptHost, builtin_script_package, builtin_script_packages};
 use swat_session::SessionManager;
 use swat_store::SwatStore;
 
+pub use history::{
+    DEFAULT_COMMAND_HISTORY_LIMIT, load_command_history_from_path, load_persisted_command_history,
+    persisted_command_history_path, store_command_history_to_path, store_persisted_command_history,
+};
 pub use registry::{CommandSurface, command_completions, command_help, command_search};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +56,23 @@ impl BreakpointConditionInput {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DashboardLayout {
+    Execution,
+    Control,
+    Target,
+}
+
+impl DashboardLayout {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Execution => "execution",
+            Self::Control => "control",
+            Self::Target => "target",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Help {
@@ -58,6 +80,12 @@ pub enum Command {
     },
     HelpSearch {
         needle: String,
+    },
+    Dashboard {
+        layout: DashboardLayout,
+    },
+    History {
+        limit: Option<usize>,
     },
     Attach,
     Session,
@@ -283,6 +311,19 @@ impl CommandOutput {
     }
 }
 
+pub fn format_command_history_output(entries: &[String], limit: Option<usize>) -> CommandOutput {
+    let total = entries.len();
+    let limit = limit.unwrap_or(total).max(1);
+    let start = total.saturating_sub(limit);
+    let lines = entries
+        .iter()
+        .enumerate()
+        .skip(start)
+        .map(|(index, entry)| format!("{:>4} {}", index + 1, entry))
+        .collect::<Vec<_>>();
+    CommandOutput::new(format!("{} command(s)", lines.len()), lines)
+}
+
 pub struct CommandHost {
     manager: SessionManager,
     adapter: Box<dyn TargetAdapter>,
@@ -291,6 +332,7 @@ pub struct CommandHost {
     trigger_specs: BTreeMap<TriggerId, PersistedTriggerSpec>,
     predicate_specs: BTreeMap<String, PersistedPredicateSpec>,
     script_packages: BTreeSet<String>,
+    command_history: VecDeque<String>,
     current_frame: usize,
     default_patient: Option<String>,
     session_id: Option<SessionId>,
@@ -306,6 +348,7 @@ impl CommandHost {
             trigger_specs: BTreeMap::new(),
             predicate_specs: BTreeMap::new(),
             script_packages: BTreeSet::new(),
+            command_history: VecDeque::new(),
             current_frame: 0,
             default_patient: None,
             session_id: None,
@@ -316,7 +359,25 @@ impl CommandHost {
         self.session_id
     }
 
+    pub fn seed_command_history<I>(&mut self, entries: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.command_history.clear();
+        for entry in entries {
+            self.record_command(&entry);
+        }
+    }
+
+    pub fn command_history_entries(&self) -> Vec<String> {
+        self.command_history.iter().cloned().collect()
+    }
+
     pub fn execute(&mut self, input: &str) -> SwatResult<CommandOutput> {
+        let trimmed = input.trim();
+        if !trimmed.is_empty() {
+            self.record_command(trimmed);
+        }
         self.execute_command(parse_command(input)?)
     }
 
@@ -324,6 +385,11 @@ impl CommandHost {
         match command {
             Command::Help { topic } => Ok(command_help(topic.as_deref(), CommandSurface::Shell)),
             Command::HelpSearch { needle } => Ok(command_search(&needle, CommandSurface::Shell)),
+            Command::Dashboard { layout } => self.show_dashboard(layout),
+            Command::History { limit } => Ok(format_command_history_output(
+                &self.command_history_entries(),
+                limit,
+            )),
             Command::Attach => self.attach_or_describe(),
             Command::Session => self.describe_session(),
             Command::Pump => self.pump_once(),
@@ -437,6 +503,23 @@ impl CommandHost {
         }
     }
 
+    fn record_command(&mut self, command: &str) {
+        if command.is_empty() {
+            return;
+        }
+        if self
+            .command_history
+            .back()
+            .is_some_and(|last| last.as_str() == command)
+        {
+            return;
+        }
+        self.command_history.push_back(command.to_string());
+        while self.command_history.len() > DEFAULT_COMMAND_HISTORY_LIMIT {
+            self.command_history.pop_front();
+        }
+    }
+
     fn attach_or_describe(&mut self) -> SwatResult<CommandOutput> {
         if self.session_id.is_some() {
             return self.describe_session();
@@ -516,6 +599,189 @@ impl CommandHost {
                 ),
             ],
         ))
+    }
+
+    fn show_dashboard(&mut self, layout: DashboardLayout) -> SwatResult<CommandOutput> {
+        let lines = match layout {
+            DashboardLayout::Execution => self.dashboard_execution_lines()?,
+            DashboardLayout::Control => self.dashboard_control_lines()?,
+            DashboardLayout::Target => self.dashboard_target_lines()?,
+        };
+        Ok(CommandOutput::new(
+            format!("dashboard {}", layout.label()),
+            lines,
+        ))
+    }
+
+    fn dashboard_execution_lines(&mut self) -> SwatResult<Vec<String>> {
+        let mut lines = Vec::new();
+        extend_dashboard_section(&mut lines, "session", self.describe_session()?, 6);
+        extend_dashboard_section(&mut lines, "stack", self.list_spans(Some(6))?, 6);
+        extend_dashboard_section(&mut lines, "where", self.show_where()?, 8);
+        extend_dashboard_section(&mut lines, "values", self.list_values()?, 4);
+        Ok(lines)
+    }
+
+    fn dashboard_control_lines(&mut self) -> SwatResult<Vec<String>> {
+        let mut lines = Vec::new();
+        extend_dashboard_section(&mut lines, "breakpoints", self.list_breakpoints()?, 8);
+        extend_dashboard_section(&mut lines, "watchpoints", self.list_watchpoints()?, 8);
+        extend_dashboard_section(
+            &mut lines,
+            "snapshots / replay",
+            CommandOutput::new(
+                "snapshot dashboard",
+                self.dashboard_snapshot_replay_lines()?,
+            ),
+            8,
+        );
+        Ok(lines)
+    }
+
+    fn dashboard_target_lines(&mut self) -> SwatResult<Vec<String>> {
+        let mut lines = Vec::new();
+        extend_dashboard_section(&mut lines, "stack", self.list_spans(Some(6))?, 6);
+        extend_dashboard_section(
+            &mut lines,
+            "patients / handles / objects",
+            CommandOutput::new("target entities", self.dashboard_entity_lines()?),
+            9,
+        );
+        extend_dashboard_section(
+            &mut lines,
+            "source navigation",
+            CommandOutput::new("source navigation", self.dashboard_source_catalog_lines()?),
+            9,
+        );
+        Ok(lines)
+    }
+
+    fn dashboard_snapshot_replay_lines(&mut self) -> SwatResult<Vec<String>> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let snapshots = inspector.session_snapshots(session_id);
+        let mut lines = vec![format!("snapshots={}", snapshots.len())];
+        for snapshot in snapshots.iter().rev().take(3) {
+            let replay_directives = inspector
+                .snapshot_inspection(snapshot.snapshot_id)
+                .map(|inspection| inspection.replay_directive_count)
+                .unwrap_or_default();
+            lines.push(format!(
+                "snapshot={} seq={} replay={} reason={}",
+                snapshot.snapshot_id.raw(),
+                snapshot.captured_sequence_no,
+                replay_directives,
+                snapshot.reason
+            ));
+        }
+
+        let frames = inspector.stack_frames(session_id)?;
+        if let Some(frame) = frames.get(self.current_frame.min(frames.len().saturating_sub(1))) {
+            let plan = inspector.replay_plan_for_boundary(session_id, frame.boundary_id);
+            lines.push(format!(
+                "current-boundary={} frame={} directives={}",
+                frame.boundary_id.raw(),
+                frame.frame_index,
+                plan.len()
+            ));
+            lines.extend(format_replay_plan_lines(&plan).into_iter().take(4));
+        } else {
+            lines.push("no current boundary replay plan".to_string());
+        }
+
+        Ok(lines)
+    }
+
+    fn dashboard_entity_lines(&self) -> SwatResult<Vec<String>> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let patients = inspector.patients(session_id)?;
+        let handles = inspector.handles(session_id)?;
+        let objects = inspector.objects(session_id)?;
+
+        let mut lines = vec![format!(
+            "patients={} handles={} objects={}",
+            patients.len(),
+            handles.len(),
+            objects.len()
+        )];
+        if patients.is_empty() {
+            lines.push("no typed target entities are available".to_string());
+            return Ok(lines);
+        }
+
+        lines.push("patients:".to_string());
+        lines.extend(patients.iter().take(3).map(format_patient_summary));
+        if !handles.is_empty() {
+            lines.push("handles:".to_string());
+            lines.extend(handles.iter().take(3).map(format_handle_summary));
+        }
+        if !objects.is_empty() {
+            lines.push("objects:".to_string());
+            lines.extend(objects.iter().take(3).map(format_object_summary));
+        }
+        Ok(lines)
+    }
+
+    fn dashboard_source_catalog_lines(&self) -> SwatResult<Vec<String>> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        let files = inspector.source_files(session_id)?;
+        let functions = inspector.source_functions(session_id)?;
+
+        let mut lines = vec![format!(
+            "files={} functions={}",
+            files.len(),
+            functions.len()
+        )];
+        if let Some(frame) = inspector.stack_frames(session_id)?.get(self.current_frame) {
+            lines.push(format!(
+                "current={} line={} function={}",
+                frame.source_file.as_deref().unwrap_or("-"),
+                frame
+                    .source_line
+                    .map(|line| line.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                frame.function.as_deref().unwrap_or("-")
+            ));
+        }
+
+        if !files.is_empty() {
+            lines.push("files:".to_string());
+            lines.extend(files.iter().take(3).map(|file| {
+                format!(
+                    "file={} events={} lines={}..{}",
+                    file.file,
+                    file.event_count,
+                    file.first_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    file.last_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                )
+            }));
+        }
+        if !functions.is_empty() {
+            lines.push("functions:".to_string());
+            lines.extend(functions.iter().take(3).map(|function| {
+                format!(
+                    "function={} file={} lines={}..{} events={}",
+                    function.function,
+                    function.file,
+                    function
+                        .first_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    function
+                        .last_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    function.event_count
+                )
+            }));
+        }
+        Ok(lines)
     }
 
     fn pump_once(&mut self) -> SwatResult<CommandOutput> {
@@ -2796,6 +3062,24 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
             topic: Some(rest.trim().to_string()),
         });
     }
+    if trimmed == "dashboard" {
+        return Ok(Command::Dashboard {
+            layout: DashboardLayout::Execution,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("dashboard ") {
+        return Ok(Command::Dashboard {
+            layout: parse_dashboard_layout(rest)?,
+        });
+    }
+    if trimmed == "history" {
+        return Ok(Command::History { limit: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("history ") {
+        return Ok(Command::History {
+            limit: Some(parse_usize(rest.trim(), "history count")?),
+        });
+    }
     if trimmed == "attach" {
         return Ok(Command::Attach);
     }
@@ -3697,6 +3981,17 @@ fn parse_usize(value: &str, label: &str) -> SwatResult<usize> {
         .map_err(|err| SwatError::new(format!("invalid {label} '{value}': {err}")))
 }
 
+fn parse_dashboard_layout(value: &str) -> SwatResult<DashboardLayout> {
+    match value.trim() {
+        "execution" | "overview" => Ok(DashboardLayout::Execution),
+        "control" => Ok(DashboardLayout::Control),
+        "target" => Ok(DashboardLayout::Target),
+        other => Err(SwatError::new(format!(
+            "unknown dashboard layout '{other}' (expected execution, control, or target)"
+        ))),
+    }
+}
+
 fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
     match kind {
         "Lifecycle" => Ok(EventKind::Lifecycle),
@@ -3938,6 +4233,24 @@ fn format_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn extend_dashboard_section(
+    lines: &mut Vec<String>,
+    title: &str,
+    output: CommandOutput,
+    max_lines: usize,
+) {
+    lines.push(format!("[{title}] {}", output.summary));
+    let mut shown = 0usize;
+    for line in output.lines {
+        if shown == max_lines {
+            lines.push(format!("... more {title} lines omitted"));
+            break;
+        }
+        lines.push(format!("  {line}"));
+        shown += 1;
+    }
 }
 
 fn format_stack_frame_summary(frame: &StackFrame) -> String {

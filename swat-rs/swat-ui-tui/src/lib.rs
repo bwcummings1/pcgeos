@@ -25,8 +25,10 @@ use swat_api::{
     ResourceSummary, SourceFunctionSummary, StackFrame, TraceInspector, WatchpointSpec,
 };
 use swat_command::{
-    BreakpointConditionInput, Command, CommandOutput, CommandSurface, command_completions,
-    command_help, command_search, parse_command,
+    BreakpointConditionInput, Command, CommandOutput, CommandSurface,
+    DEFAULT_COMMAND_HISTORY_LIMIT, DashboardLayout, command_completions, command_help,
+    command_search, format_command_history_output, load_persisted_command_history, parse_command,
+    store_persisted_command_history,
 };
 use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate, pump_with_triggers};
 use swat_core::{
@@ -221,12 +223,14 @@ pub struct TuiApp {
     filter: EventFilter,
     selected_event: usize,
     selected_frame: usize,
+    dashboard_layout: DashboardLayout,
     command_mode: bool,
     command_input: String,
     command_history: VecDeque<String>,
     command_history_index: Option<usize>,
     completion_matches: Vec<String>,
     completion_index: usize,
+    history_persist_error_reported: bool,
     default_patient: Option<String>,
     manual_source: Option<ManualSourceView>,
     messages: VecDeque<String>,
@@ -234,6 +238,19 @@ pub struct TuiApp {
 
 impl TuiApp {
     pub fn new(config: &TuiConfig) -> SwatResult<Self> {
+        let (history, history_warning) = match load_persisted_command_history(
+            CommandSurface::Tui,
+            DEFAULT_COMMAND_HISTORY_LIMIT,
+        ) {
+            Ok(history) => (history, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        let mut messages = VecDeque::from([
+            "q quit | :help | Tab complete | Up/Down history | 1/2/3 dashboards | a attach | u pump | r resume | p pause | s step".to_string(),
+        ]);
+        if let Some(warning) = history_warning {
+            messages.push_back(format!("history unavailable: {warning}"));
+        }
         Ok(Self {
             runtime: LiveRuntime::new(
                 build_adapter(&config.mode)?,
@@ -242,17 +259,17 @@ impl TuiApp {
             filter: EventFilter::All,
             selected_event: 0,
             selected_frame: 0,
+            dashboard_layout: DashboardLayout::Execution,
             command_mode: false,
             command_input: String::new(),
-            command_history: VecDeque::new(),
+            command_history: history.into(),
             command_history_index: None,
             completion_matches: Vec::new(),
             completion_index: 0,
+            history_persist_error_reported: false,
             default_patient: None,
             manual_source: None,
-            messages: VecDeque::from([
-                "q quit | :help | Tab complete | Up/Down history | a attach | u pump | r resume | p pause | s step".to_string(),
-            ]),
+            messages,
         })
     }
 
@@ -320,6 +337,18 @@ impl TuiApp {
                 self.push_message(message);
                 Ok(false)
             }
+            KeyCode::Char('1') => {
+                self.set_dashboard_layout(DashboardLayout::Execution);
+                Ok(false)
+            }
+            KeyCode::Char('2') => {
+                self.set_dashboard_layout(DashboardLayout::Control);
+                Ok(false)
+            }
+            KeyCode::Char('3') => {
+                self.set_dashboard_layout(DashboardLayout::Target);
+                Ok(false)
+            }
             KeyCode::Char('c') => {
                 self.filter = EventFilter::All;
                 self.push_message("cleared event filter".to_string());
@@ -336,6 +365,28 @@ impl TuiApp {
                 let len = self.runtime.session_events(&self.filter)?.len();
                 if len > 0 && self.selected_event + 1 < len {
                     self.selected_event += 1;
+                }
+                Ok(false)
+            }
+            KeyCode::PageUp => {
+                self.selected_event = self.selected_event.saturating_sub(10);
+                Ok(false)
+            }
+            KeyCode::PageDown => {
+                let len = self.runtime.session_events(&self.filter)?.len();
+                if len > 0 {
+                    self.selected_event = (self.selected_event + 10).min(len - 1);
+                }
+                Ok(false)
+            }
+            KeyCode::Home => {
+                self.selected_event = 0;
+                Ok(false)
+            }
+            KeyCode::End => {
+                let len = self.runtime.session_events(&self.filter)?.len();
+                if len > 0 {
+                    self.selected_event = len - 1;
                 }
                 Ok(false)
             }
@@ -388,6 +439,11 @@ impl TuiApp {
                 format!("filter={}", snapshot.filter_label),
                 Style::default().fg(Color::Yellow),
             ),
+            Span::raw("  "),
+            Span::styled(
+                format!("dashboard={}", snapshot.dashboard_label),
+                Style::default().fg(Color::Green),
+            ),
         ]));
         frame.render_widget(title, root[0]);
 
@@ -412,12 +468,15 @@ impl TuiApp {
         frame.render_stateful_widget(event_list, content[0], &mut event_state);
 
         frame.render_widget(
-            render_lines("Stack / Entities", &snapshot.entity_lines),
+            render_lines(&snapshot.pane_one.title, &snapshot.pane_one.lines),
             right[0],
         );
-        frame.render_widget(render_lines("Source", &snapshot.source_lines), right[1]);
         frame.render_widget(
-            render_lines("Artifacts", &snapshot.artifact_lines),
+            render_lines(&snapshot.pane_two.title, &snapshot.pane_two.lines),
+            right[1],
+        );
+        frame.render_widget(
+            render_lines(&snapshot.pane_three.title, &snapshot.pane_three.lines),
             right[2],
         );
         frame.render_widget(render_lines("Messages", &snapshot.message_lines), root[2]);
@@ -458,17 +517,202 @@ impl TuiApp {
         }
         let selected_event = events.get(self.selected_event).cloned();
         let event_lines = events.iter().map(format_event_line).collect::<Vec<_>>();
+        let (pane_one, pane_two, pane_three) = self.dashboard_panes(selected_event.as_ref())?;
 
         Ok(ViewSnapshot {
             session_label: self.runtime.session_label(),
             filter_label: self.filter.label(),
+            dashboard_label: self.dashboard_layout.label().to_string(),
             selected_index: self.selected_event,
             events: event_lines,
-            entity_lines: self.entity_lines(selected_event.as_ref())?,
-            source_lines: self.source_lines(selected_event.as_ref())?,
-            artifact_lines: self.artifact_lines(selected_event.as_ref())?,
+            pane_one,
+            pane_two,
+            pane_three,
             message_lines: self.messages.iter().cloned().collect(),
         })
+    }
+
+    fn set_dashboard_layout(&mut self, layout: DashboardLayout) {
+        self.dashboard_layout = layout;
+        self.push_message(format!("dashboard={}", layout.label()));
+    }
+
+    fn dashboard_panes(
+        &mut self,
+        selected_event: Option<&EventEnvelope>,
+    ) -> SwatResult<(ViewPane, ViewPane, ViewPane)> {
+        match self.dashboard_layout {
+            DashboardLayout::Execution => Ok((
+                ViewPane::new("Stack / Entities", self.entity_lines(selected_event)?),
+                ViewPane::new("Source", self.source_lines(selected_event)?),
+                ViewPane::new("Artifacts", self.artifact_lines(selected_event)?),
+            )),
+            DashboardLayout::Control => {
+                let breakpoints = self.list_breakpoints_output()?;
+                let watchpoints = self.list_watchpoints_output();
+                Ok((
+                    ViewPane::new(
+                        "Breakpoints",
+                        with_summary_line(breakpoints.summary, breakpoints.lines),
+                    ),
+                    ViewPane::new(
+                        "Watchpoints",
+                        with_summary_line(watchpoints.summary, watchpoints.lines),
+                    ),
+                    ViewPane::new("Snapshots / Replay", self.snapshot_replay_lines()?),
+                ))
+            }
+            DashboardLayout::Target => Ok((
+                ViewPane::new("Stack Frames", self.stack_lines(Some(8))?),
+                ViewPane::new(
+                    "Patients / Handles / Objects",
+                    self.target_entity_catalog_lines()?,
+                ),
+                ViewPane::new(
+                    "Source Navigation",
+                    self.source_navigation_lines(selected_event)?,
+                ),
+            )),
+        }
+    }
+
+    fn snapshot_replay_lines(&mut self) -> SwatResult<Vec<String>> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Ok(vec![
+                "attach a target to inspect snapshots and replay".to_string(),
+            ]);
+        };
+        let inspector = self.runtime.inspector();
+        let snapshots = inspector.session_snapshots(session_id);
+        let mut lines = vec![format!("snapshots={}", snapshots.len())];
+        for snapshot in snapshots.iter().rev().take(4) {
+            let replay_directives = inspector
+                .snapshot_inspection(snapshot.snapshot_id)
+                .map(|inspection| inspection.replay_directive_count)
+                .unwrap_or_default();
+            lines.push(format!(
+                "snapshot={} seq={} replay={} reason={}",
+                snapshot.snapshot_id.raw(),
+                snapshot.captured_sequence_no,
+                replay_directives,
+                snapshot.reason
+            ));
+        }
+
+        let frames = inspector.stack_frames(session_id)?;
+        if let Some(frame) = frames.get(self.selected_frame.min(frames.len().saturating_sub(1))) {
+            let plan = inspector.replay_plan_for_boundary(session_id, frame.boundary_id);
+            lines.push(format!(
+                "current-boundary={} frame={} directives={}",
+                frame.boundary_id.raw(),
+                frame.frame_index,
+                plan.len()
+            ));
+            lines.extend(format_tui_replay_plan_lines(&plan).into_iter().take(4));
+        } else {
+            lines.push("no current boundary replay plan".to_string());
+        }
+        Ok(lines)
+    }
+
+    fn target_entity_catalog_lines(&self) -> SwatResult<Vec<String>> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Ok(vec![
+                "attach a target to inspect patients and objects".to_string(),
+            ]);
+        };
+        let inspector = self.runtime.inspector();
+        let patients = inspector.patients(session_id)?;
+        let handles = inspector.handles(session_id)?;
+        let objects = inspector.objects(session_id)?;
+        let mut lines = vec![format!(
+            "patients={} handles={} objects={}",
+            patients.len(),
+            handles.len(),
+            objects.len()
+        )];
+        if !patients.is_empty() {
+            lines.push("patients:".to_string());
+            lines.extend(patients.iter().take(3).map(format_tui_patient_summary));
+        }
+        if !handles.is_empty() {
+            lines.push("handles:".to_string());
+            lines.extend(handles.iter().take(3).map(format_tui_handle_summary));
+        }
+        if !objects.is_empty() {
+            lines.push("objects:".to_string());
+            lines.extend(objects.iter().take(3).map(format_tui_object_summary));
+        }
+        Ok(lines)
+    }
+
+    fn source_navigation_lines(
+        &self,
+        selected_event: Option<&EventEnvelope>,
+    ) -> SwatResult<Vec<String>> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Ok(vec![
+                "attach a target to inspect source catalogs".to_string(),
+            ]);
+        };
+        let inspector = self.runtime.inspector();
+        let files = inspector.source_files(session_id)?;
+        let functions = inspector.source_functions(session_id)?;
+        let mut lines = vec![format!(
+            "files={} functions={}",
+            files.len(),
+            functions.len()
+        )];
+
+        if let Some(view) = &self.manual_source {
+            lines.push("manual-source:".to_string());
+            lines.extend(view.lines.iter().take(6).cloned());
+            return Ok(lines);
+        }
+        if let Some(event) = selected_event {
+            if let Some(location) = inspector.source_inspection(event, 1, 2)?.location {
+                lines.push(format!(
+                    "current={} line={} function={}",
+                    location.file,
+                    location.line,
+                    location.function.unwrap_or_else(|| "-".to_string())
+                ));
+            }
+        }
+        if !files.is_empty() {
+            lines.push("files:".to_string());
+            lines.extend(files.iter().take(3).map(|file| {
+                format!(
+                    "file={} events={} functions={}",
+                    file.file,
+                    file.event_count,
+                    if file.functions.is_empty() {
+                        "-".to_string()
+                    } else {
+                        file.functions.join(",")
+                    }
+                )
+            }));
+        }
+        if !functions.is_empty() {
+            lines.push("functions:".to_string());
+            lines.extend(functions.iter().take(3).map(|function| {
+                format!(
+                    "function={} file={} lines={}..{}",
+                    function.function,
+                    function.file,
+                    function
+                        .first_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    function
+                        .last_line
+                        .map(|line| line.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                )
+            }));
+        }
+        Ok(lines)
     }
 
     fn entity_lines(&self, selected_event: Option<&EventEnvelope>) -> SwatResult<Vec<String>> {
@@ -697,6 +941,11 @@ impl TuiApp {
         match parse_command(input)? {
             Command::Help { topic } => self.show_help(topic.as_deref()),
             Command::HelpSearch { needle } => self.show_help_search(&needle),
+            Command::Dashboard { layout } => self.set_dashboard_layout(layout),
+            Command::History { limit } => {
+                let history = self.command_history.iter().cloned().collect::<Vec<_>>();
+                self.show_command_output(format_command_history_output(&history, limit));
+            }
             Command::Attach => self.attach()?,
             Command::Session => self.push_message(self.runtime.session_label()),
             Command::Pump => {
@@ -1736,8 +1985,17 @@ impl TuiApp {
             return;
         }
         self.command_history.push_back(command.to_string());
-        while self.command_history.len() > 64 {
+        while self.command_history.len() > DEFAULT_COMMAND_HISTORY_LIMIT {
             self.command_history.pop_front();
+        }
+        let entries = self.command_history.iter().cloned().collect::<Vec<_>>();
+        match store_persisted_command_history(CommandSurface::Tui, &entries) {
+            Ok(()) => self.history_persist_error_reported = false,
+            Err(error) if !self.history_persist_error_reported => {
+                self.history_persist_error_reported = true;
+                self.push_message(format!("history save failed: {error}"));
+            }
+            Err(_) => {}
         }
     }
 
@@ -2191,14 +2449,30 @@ fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
 }
 
 #[derive(Default)]
+struct ViewPane {
+    title: String,
+    lines: Vec<String>,
+}
+
+impl ViewPane {
+    fn new(title: impl Into<String>, lines: Vec<String>) -> Self {
+        Self {
+            title: title.into(),
+            lines,
+        }
+    }
+}
+
+#[derive(Default)]
 struct ViewSnapshot {
     session_label: String,
     filter_label: String,
+    dashboard_label: String,
     selected_index: usize,
     events: Vec<String>,
-    entity_lines: Vec<String>,
-    source_lines: Vec<String>,
-    artifact_lines: Vec<String>,
+    pane_one: ViewPane,
+    pane_two: ViewPane,
+    pane_three: ViewPane,
     message_lines: Vec<String>,
 }
 
@@ -2309,6 +2583,18 @@ fn format_event_line(event: &EventEnvelope) -> String {
         format!("{:?}", event.kind),
         payload_summary(event)
     )
+}
+
+fn format_tui_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {
+    plan.directives()
+        .map(|directive| {
+            format!(
+                "boundary={} artifact={}",
+                directive.boundary_id.raw(),
+                directive.artifact_ref.artifact_id.raw()
+            )
+        })
+        .collect()
 }
 
 fn format_tui_breakpoint_summary(breakpoint: &swat_api::BreakpointSummary) -> String {
@@ -2615,6 +2901,12 @@ fn join_tui_values(values: &[String]) -> String {
     } else {
         values.join(",")
     }
+}
+
+fn with_summary_line(summary: String, lines: Vec<String>) -> Vec<String> {
+    let mut combined = vec![summary];
+    combined.extend(lines);
+    combined
 }
 
 fn payload_summary(event: &EventEnvelope) -> String {
@@ -2947,6 +3239,48 @@ time.sleep(0.1)
     }
 
     #[test]
+    fn tui_dashboard_switches_between_execution_control_and_target_views() {
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::PcGeos { fixture_path: None })).unwrap();
+        app.attach().unwrap();
+
+        let execution = app.snapshot().unwrap();
+        assert_eq!(execution.dashboard_label, "execution");
+        assert_eq!(execution.pane_one.title, "Stack / Entities");
+
+        app.execute_command("dashboard control").unwrap();
+        let control = app.snapshot().unwrap();
+        assert_eq!(control.dashboard_label, "control");
+        assert_eq!(control.pane_one.title, "Breakpoints");
+        assert!(
+            control
+                .pane_three
+                .lines
+                .iter()
+                .any(|line| line.contains("current-boundary="))
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE))
+            .unwrap();
+        let target = app.snapshot().unwrap();
+        assert_eq!(target.dashboard_label, "target");
+        assert_eq!(target.pane_two.title, "Patients / Handles / Objects");
+        assert!(
+            target
+                .pane_two
+                .lines
+                .iter()
+                .any(|line| line.contains("patient=geopoint"))
+        );
+        assert!(
+            target
+                .pane_three
+                .lines
+                .iter()
+                .any(|line| line.contains("show.goc"))
+        );
+    }
+
+    #[test]
     fn tui_command_entry_supports_completion_and_history_navigation() {
         let mut app = TuiApp::new(&TuiConfig::new(Mode::Mock)).unwrap();
 
@@ -2975,5 +3309,8 @@ time.sleep(0.1)
         app.handle_command_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.command_input, "help source");
+
+        app.execute_command("history 2").unwrap();
+        assert!(app.messages.iter().any(|line| line.contains("help source")));
     }
 }
