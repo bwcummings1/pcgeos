@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use swat_core::{
     AdapterEmission, ControlAction, ControlResponse, EventEnvelope, EventId, EventKind,
-    EventPayload, PendingEvent, SwatResult, TargetAdapter, TriggerId,
+    EventPayload, PendingEvent, SwatResult, TargetAdapter, Timestamp, TriggerId,
 };
 use swat_expr::{QueryExpr, evaluate_expression, format_expression};
 use swat_schema::{SchemaNode, validate_decoded_value};
@@ -16,6 +16,13 @@ use swat_value::{QueriedValue, decode_artifact};
 pub enum TriggerPredicate {
     Expr(QueryExpr),
     Named(String),
+    ValueChanged {
+        value_key: String,
+        path: Option<String>,
+    },
+    ObservedAfter {
+        millis: u64,
+    },
     EventKindIs(EventKind),
     SummaryContains(String),
     ArtifactUtf8Contains(String),
@@ -33,6 +40,18 @@ pub enum TriggerPredicate {
 pub struct TriggerPredicateDefinition {
     pub name: String,
     pub predicate: TriggerPredicate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ValueWatchKey {
+    value_key: String,
+    path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WatchedValue {
+    Text(String),
+    Query(QueriedValue),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,6 +162,8 @@ pub struct TriggerEngine {
     fired_once: BTreeSet<TriggerId>,
     predicate_library: BTreeMap<String, TriggerPredicate>,
     group_policies: BTreeMap<String, bool>,
+    first_observed_at: Option<Timestamp>,
+    watched_values: BTreeMap<ValueWatchKey, WatchedValue>,
 }
 
 impl TriggerEngine {
@@ -247,7 +268,11 @@ impl TriggerEngine {
         event: &EventEnvelope,
         store: &S,
     ) -> Vec<TriggerMatch> {
+        if self.first_observed_at.is_none() {
+            self.first_observed_at = Some(event.observed_at);
+        }
         let mut matches = Vec::new();
+        let mut pending_value_updates = BTreeMap::new();
 
         for trigger in &mut self.triggers {
             if !trigger.enabled {
@@ -266,6 +291,9 @@ impl TriggerEngine {
                 event,
                 store,
                 &self.predicate_library,
+                self.first_observed_at,
+                &self.watched_values,
+                &mut pending_value_updates,
                 &mut BTreeSet::new(),
             ) {
                 continue;
@@ -295,6 +323,8 @@ impl TriggerEngine {
                 self.fired_once.insert(trigger.trigger_id);
             }
         }
+
+        self.watched_values.extend(pending_value_updates);
 
         matches
     }
@@ -363,6 +393,11 @@ pub fn format_trigger_predicate(predicate: &TriggerPredicate) -> String {
     match predicate {
         TriggerPredicate::Expr(expr) => format_expression(expr),
         TriggerPredicate::Named(name) => format!("@{name}"),
+        TriggerPredicate::ValueChanged { value_key, path } => match path {
+            Some(path) => format!("watch {value_key} {path} changed"),
+            None => format!("watch {value_key} changed"),
+        },
+        TriggerPredicate::ObservedAfter { millis } => format!("after {millis}ms"),
         TriggerPredicate::EventKindIs(kind) => format!("kind == {kind:?}"),
         TriggerPredicate::SummaryContains(needle) => format!("summary contains {needle:?}"),
         TriggerPredicate::ArtifactUtf8Contains(needle) => {
@@ -446,6 +481,9 @@ fn predicate_matches<S: SwatStore + ?Sized>(
     event: &EventEnvelope,
     store: &S,
     predicate_library: &BTreeMap<String, TriggerPredicate>,
+    first_observed_at: Option<Timestamp>,
+    watched_values: &BTreeMap<ValueWatchKey, WatchedValue>,
+    pending_value_updates: &mut BTreeMap<ValueWatchKey, WatchedValue>,
     visiting: &mut BTreeSet<String>,
 ) -> bool {
     match predicate {
@@ -457,12 +495,44 @@ fn predicate_matches<S: SwatStore + ?Sized>(
             let matched = predicate_library
                 .get(name)
                 .map(|predicate| {
-                    predicate_matches(predicate, event, store, predicate_library, visiting)
+                    predicate_matches(
+                        predicate,
+                        event,
+                        store,
+                        predicate_library,
+                        first_observed_at,
+                        watched_values,
+                        pending_value_updates,
+                        visiting,
+                    )
                 })
                 .unwrap_or(false);
             visiting.remove(name);
             matched
         }
+        TriggerPredicate::ValueChanged { value_key, path } => {
+            let key = ValueWatchKey {
+                value_key: value_key.clone(),
+                path: path.clone(),
+            };
+            let Some(current) = watched_value_for_event(event, store, &key) else {
+                return false;
+            };
+            pending_value_updates.insert(key.clone(), current.clone());
+            watched_values
+                .get(&key)
+                .map(|previous| previous != &current)
+                .unwrap_or(false)
+        }
+        TriggerPredicate::ObservedAfter { millis } => first_observed_at
+            .map(|first_observed_at| {
+                event
+                    .observed_at
+                    .as_millis()
+                    .saturating_sub(first_observed_at.as_millis())
+                    >= *millis
+            })
+            .unwrap_or(false),
         TriggerPredicate::EventKindIs(kind) => event.kind == *kind,
         TriggerPredicate::SummaryContains(needle) => payload_summary(event)
             .map(|summary| summary.contains(needle))
@@ -508,10 +578,28 @@ fn predicate_matches<S: SwatStore + ?Sized>(
             })
         }
         TriggerPredicate::All(predicates) => predicates.iter().all(|predicate| {
-            predicate_matches(predicate, event, store, predicate_library, visiting)
+            predicate_matches(
+                predicate,
+                event,
+                store,
+                predicate_library,
+                first_observed_at,
+                watched_values,
+                pending_value_updates,
+                visiting,
+            )
         }),
         TriggerPredicate::Any(predicates) => predicates.iter().any(|predicate| {
-            predicate_matches(predicate, event, store, predicate_library, visiting)
+            predicate_matches(
+                predicate,
+                event,
+                store,
+                predicate_library,
+                first_observed_at,
+                watched_values,
+                pending_value_updates,
+                visiting,
+            )
         }),
     }
 }
@@ -542,6 +630,45 @@ fn format_queried_value(value: &QueriedValue) -> String {
         QueriedValue::String(value) => format!("{value:?}"),
         QueriedValue::Json(value) => value.clone(),
     }
+}
+
+fn watched_value_for_event<S: SwatStore + ?Sized>(
+    event: &EventEnvelope,
+    store: &S,
+    key: &ValueWatchKey,
+) -> Option<WatchedValue> {
+    let EventPayload::Value {
+        value_key: event_value_key,
+        ..
+    } = &event.payload
+    else {
+        return None;
+    };
+    if event_value_key != &key.value_key {
+        return None;
+    }
+
+    if let Some(path) = key.path.as_deref() {
+        return event.artifact_refs.iter().find_map(|artifact_ref| {
+            store
+                .artifact(artifact_ref.artifact_id)
+                .and_then(|artifact| decode_artifact(artifact).ok())
+                .and_then(|value| value.query_json_path(path).ok())
+                .flatten()
+                .map(WatchedValue::Query)
+        });
+    }
+
+    event
+        .artifact_refs
+        .iter()
+        .find_map(|artifact_ref| {
+            store
+                .artifact(artifact_ref.artifact_id)
+                .and_then(|artifact| decode_artifact(artifact).ok())
+                .map(|value| WatchedValue::Text(value.detail()))
+        })
+        .or_else(|| payload_summary(event).map(|summary| WatchedValue::Text(summary.to_string())))
 }
 
 fn payload_summary(event: &EventEnvelope) -> Option<&str> {

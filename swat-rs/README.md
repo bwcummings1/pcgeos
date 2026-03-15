@@ -101,6 +101,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0026-command-registry-and-debugger-families.md`
 - `docs/adrs/0027-supervised-continuation-runner.md`
 - `docs/adrs/0028-breakpoint-definition-groups-and-stop-reasons.md`
+- `docs/adrs/0029-stateful-watchpoint-predicates.md`
 
 ## Phase 1 status
 
@@ -160,7 +161,9 @@ This crate evaluates trigger predicates over events and artifact content, emits
 `TriggerHit` records, and drives follow-up control actions back through the
 session manager. It now also supports reusable named predicates, user-defined
 breakpoint groups with shared enable policies, and first-class stop-reason
-objects for breakpoint and lifecycle-driven stops.
+objects for breakpoint and lifecycle-driven stops. The same layer now also
+supports value-change watchpoints plus elapsed-time and lifecycle-gated load
+conditions on top of shared event/value observations.
 
 The first typed value crate is also now in the workspace:
 

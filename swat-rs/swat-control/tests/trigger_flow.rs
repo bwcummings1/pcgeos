@@ -7,7 +7,11 @@ use swat_control::{
     StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerPredicate, last_control_response,
     pump_with_triggers,
 };
-use swat_core::{ControlAction, EventKind, EventPayload};
+use swat_core::{
+    AdapterEmission, ArtifactAccess, ArtifactBinding, ArtifactEncoding, ControlAction,
+    EventEnvelope, EventKind, EventPayload, PendingArtifact, PendingEvent, SessionId, TargetId,
+    Timestamp,
+};
 use swat_expr::parse_expression;
 use swat_schema::SchemaNode;
 use swat_session::SessionManager;
@@ -400,6 +404,101 @@ fn controlled_pump_reports_target_exit_stop_reasons() {
 }
 
 #[test]
+fn value_watchpoints_fire_only_after_the_observed_value_changes() {
+    let mut store = InMemoryStore::new();
+    let session_id = SessionId::new();
+    let target_id = TargetId::new();
+    let mut next_sequence = 1;
+    let mut engine = TriggerEngine::new().with_trigger(Trigger::new(
+        "watch-agent-state-count",
+        TriggerPredicate::ValueChanged {
+            value_key: "agent.state".to_string(),
+            path: Some("$.count".to_string()),
+        },
+        vec![TriggerAction::PauseTarget],
+    ));
+
+    let first = ingest_json_value_event(
+        &mut store,
+        session_id,
+        target_id,
+        &mut next_sequence,
+        1_000,
+        "agent.state",
+        "state count 1",
+        r#"{"count":1}"#,
+    );
+    assert!(engine.evaluate_event(&first, &store).is_empty());
+
+    let second = ingest_json_value_event(
+        &mut store,
+        session_id,
+        target_id,
+        &mut next_sequence,
+        1_050,
+        "agent.state",
+        "state count 1 again",
+        r#"{"count":1}"#,
+    );
+    assert!(engine.evaluate_event(&second, &store).is_empty());
+
+    let third = ingest_json_value_event(
+        &mut store,
+        session_id,
+        target_id,
+        &mut next_sequence,
+        1_100,
+        "agent.state",
+        "state count 2",
+        r#"{"count":2}"#,
+    );
+    let matches = engine.evaluate_event(&third, &store);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].trigger_name, "watch-agent-state-count");
+}
+
+#[test]
+fn lifecycle_load_conditions_can_be_gated_by_elapsed_time() {
+    let mut store = InMemoryStore::new();
+    let session_id = SessionId::new();
+    let target_id = TargetId::new();
+    let mut next_sequence = 1;
+    let mut engine = TriggerEngine::new().with_trigger(Trigger::new(
+        "delayed-load-stop",
+        TriggerPredicate::All(vec![
+            TriggerPredicate::EventKindIs(EventKind::Lifecycle),
+            TriggerPredicate::SummaryContains("loaded".to_string()),
+            TriggerPredicate::ObservedAfter { millis: 500 },
+        ]),
+        vec![TriggerAction::PauseTarget],
+    ));
+
+    let early = ingest_text_event(
+        &mut store,
+        session_id,
+        target_id,
+        &mut next_sequence,
+        1_000,
+        EventKind::Lifecycle,
+        "resource loaded too early",
+    );
+    assert!(engine.evaluate_event(&early, &store).is_empty());
+
+    let late = ingest_text_event(
+        &mut store,
+        session_id,
+        target_id,
+        &mut next_sequence,
+        1_600,
+        EventKind::Lifecycle,
+        "resource loaded after delay",
+    );
+    let matches = engine.evaluate_event(&late, &store);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].trigger_name, "delayed-load-stop");
+}
+
+#[test]
 fn local_process_output_can_semantically_pause_target() {
     let spec = LocalProcessSpec::new("/bin/sh").with_args(["-c", "printf 'pause-me\\n'; sleep 2"]);
     let mut adapter = LocalProcessAdapter::new(spec);
@@ -474,6 +573,79 @@ fn local_process_output_can_semantically_pause_target() {
     }
 
     panic!("local process did not exit after semantic resume");
+}
+
+fn ingest_json_value_event(
+    store: &mut InMemoryStore,
+    session_id: SessionId,
+    target_id: TargetId,
+    next_sequence: &mut u64,
+    observed_at: u64,
+    value_key: &str,
+    summary: &str,
+    json: &str,
+) -> EventEnvelope {
+    let alias = swat_core::ArtifactAlias::new();
+    store
+        .ingest_emission(
+            session_id,
+            target_id,
+            next_sequence,
+            AdapterEmission {
+                pending_events: vec![PendingEvent {
+                    observed_at: Timestamp::from_millis(observed_at),
+                    kind: EventKind::ValueObserved,
+                    causality: Default::default(),
+                    payload: EventPayload::Value {
+                        value_key: value_key.to_string(),
+                        summary: summary.to_string(),
+                    },
+                    artifacts: vec![ArtifactBinding::Pending(alias)],
+                }],
+                pending_artifacts: vec![PendingArtifact {
+                    alias,
+                    media_type: "application/json".to_string(),
+                    encoding: ArtifactEncoding::Json,
+                    access: ArtifactAccess::Inline,
+                    bytes: json.as_bytes().to_vec(),
+                }],
+            },
+        )
+        .unwrap()
+        .pop()
+        .unwrap()
+}
+
+fn ingest_text_event(
+    store: &mut InMemoryStore,
+    session_id: SessionId,
+    target_id: TargetId,
+    next_sequence: &mut u64,
+    observed_at: u64,
+    kind: EventKind,
+    summary: &str,
+) -> EventEnvelope {
+    store
+        .ingest_emission(
+            session_id,
+            target_id,
+            next_sequence,
+            AdapterEmission {
+                pending_events: vec![PendingEvent {
+                    observed_at: Timestamp::from_millis(observed_at),
+                    kind,
+                    causality: Default::default(),
+                    payload: EventPayload::Text {
+                        summary: summary.to_string(),
+                    },
+                    artifacts: Vec::new(),
+                }],
+                pending_artifacts: Vec::new(),
+            },
+        )
+        .unwrap()
+        .pop()
+        .unwrap()
 }
 
 #[test]
