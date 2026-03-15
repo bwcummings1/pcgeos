@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 6,
-    "pending": 15,
+    "done": 7,
+    "pending": 14,
     "blocked": 0
   },
   "tasks": [
@@ -65,12 +65,12 @@
     },
     {
       "task": "T-007",
-      "status": "pending",
+      "status": "done",
       "milestone": "M1",
       "description": "Reconcile Milestone 1 docs, demos, and validation evidence until the milestone exit criteria are materially satisfied.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Close M1 before moving to advanced breakpoint semantics."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "379a608a",
+      "notes": "Milestone 1 closeout note, refreshed command demo coverage, and green focused/full validation now document the command-ecology exit criteria."
     },
     {
       "task": "T-008",
