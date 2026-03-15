@@ -130,3 +130,91 @@ fn value_presentations_format_json_text_and_binary_for_operators() {
     assert!(binary_presentation.preview.contains("de ad be ef"));
     assert!(binary_presentation.detail.contains("de ad be ef"));
 }
+
+#[test]
+fn decoded_values_extract_typed_patient_handle_resource_and_object_records() {
+    let value = decode_artifact(StoredArtifact {
+        artifact_ref: ArtifactRef {
+            artifact_id: ArtifactId::from_raw(4),
+            media_type: "application/json".to_string(),
+            encoding: ArtifactEncoding::Json,
+            size_hint: None,
+            access: ArtifactAccess::Inline,
+        },
+        created_at: swat_core::Timestamp::from_millis(4),
+        bytes: br#"{
+            "patient": {
+                "name": "ui",
+                "id": "patient-ui",
+                "role": "application",
+                "status": "running",
+                "runtime": "pcgeos",
+                "path": "/repo/UI.geo",
+                "default": true,
+                "handles": [
+                    {
+                        "id": "h:1001",
+                        "kind": "resource",
+                        "state": ["in", "fixed"],
+                        "resource": "AppResource",
+                        "objects": [
+                            {"id": "^lui:0002", "class": "GenApplication", "state": ["usable"]}
+                        ]
+                    }
+                ],
+                "resources": [
+                    {
+                        "name": "AppResource",
+                        "handle": "h:1001",
+                        "kind": "ui",
+                        "source_file": "/repo/ui.goc",
+                        "objects": ["^lui:0002"]
+                    }
+                ],
+                "objects": [
+                    {
+                        "id": "^lui:0002",
+                        "class": "GenApplication",
+                        "handle": "h:1001",
+                        "resource": "AppResource",
+                        "address": "^lui:0002"
+                    }
+                ]
+            }
+        }"#
+        .to_vec(),
+    })
+    .unwrap();
+
+    let entities = value.typed_entities();
+    assert_eq!(entities.patients.len(), 1);
+    assert_eq!(entities.patients[0].key, "ui");
+    assert_eq!(entities.patients[0].identifier.as_deref(), Some("patient-ui"));
+    assert_eq!(entities.patients[0].handle_ids, vec!["h:1001".to_string()]);
+    assert_eq!(
+        entities.patients[0].resource_names,
+        vec!["AppResource".to_string()]
+    );
+    assert_eq!(entities.handles.len(), 1);
+    assert_eq!(entities.handles[0].key, "h:1001");
+    assert_eq!(entities.handles[0].patient.as_deref(), Some("ui"));
+    assert_eq!(entities.handles[0].resource.as_deref(), Some("AppResource"));
+    assert_eq!(
+        entities.handles[0].state_flags,
+        vec!["fixed".to_string(), "in".to_string()]
+    );
+    assert!(!entities.resources.is_empty());
+    assert!(entities.resources.iter().any(|resource| {
+        resource.key == "AppResource"
+            && resource.patient.as_deref() == Some("ui")
+            && resource.handle.as_deref() == Some("h:1001")
+    }));
+    assert!(!entities.objects.is_empty());
+    assert!(entities.objects.iter().any(|object| {
+        object.key == "^lui:0002"
+            && object.class_name.as_deref() == Some("GenApplication")
+            && object.patient.as_deref() == Some("ui")
+            && object.handle.as_deref() == Some("h:1001")
+            && object.resource.as_deref() == Some("AppResource")
+    }));
+}

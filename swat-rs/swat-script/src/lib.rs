@@ -246,6 +246,130 @@ impl ScriptContext {
             .unwrap_or_default()
     }
 
+    pub fn patient_count(&mut self) -> i64 {
+        self.inspector()
+            .patients(self.session_id)
+            .map(|patients| patients.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn patient_name(&mut self, patient_index: i64) -> String {
+        if patient_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .patients(self.session_id)
+            .ok()
+            .and_then(|patients| {
+                patients
+                    .get(patient_index as usize)
+                    .map(|patient| patient.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn patient_handle_count(&mut self, patient: &str) -> i64 {
+        self.inspector()
+            .patient_detail(self.session_id, patient)
+            .ok()
+            .flatten()
+            .map(|detail| detail.handles.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn handle_count(&mut self) -> i64 {
+        self.inspector()
+            .handles(self.session_id)
+            .map(|handles| handles.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn handle_name(&mut self, handle_index: i64) -> String {
+        if handle_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .handles(self.session_id)
+            .ok()
+            .and_then(|handles| {
+                handles
+                    .get(handle_index as usize)
+                    .map(|handle| handle.key.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn handle_object_count(&mut self, handle: &str) -> i64 {
+        self.inspector()
+            .handle_detail(self.session_id, handle)
+            .ok()
+            .flatten()
+            .map(|detail| detail.objects.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn resource_count(&mut self) -> i64 {
+        self.inspector()
+            .resources(self.session_id)
+            .map(|resources| resources.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn resource_name(&mut self, resource_index: i64) -> String {
+        if resource_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .resources(self.session_id)
+            .ok()
+            .and_then(|resources| {
+                resources
+                    .get(resource_index as usize)
+                    .map(|resource| resource.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn resource_object_count(&mut self, resource: &str) -> i64 {
+        self.inspector()
+            .resource_detail(self.session_id, resource)
+            .ok()
+            .flatten()
+            .map(|detail| detail.objects.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn object_count(&mut self) -> i64 {
+        self.inspector()
+            .objects(self.session_id)
+            .map(|objects| objects.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn object_identity(&mut self, object_index: i64) -> String {
+        if object_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .objects(self.session_id)
+            .ok()
+            .and_then(|objects| {
+                objects
+                    .get(object_index as usize)
+                    .map(|object| object.key.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn object_class(&mut self, object: &str) -> String {
+        self.inspector()
+            .object_detail(self.session_id, object)
+            .ok()
+            .flatten()
+            .and_then(|detail| detail.object.class_name)
+            .unwrap_or_default()
+    }
+
     pub fn source_file_count(&mut self) -> i64 {
         self.inspector()
             .source_files(self.session_id)
@@ -319,6 +443,21 @@ impl ScriptHost {
             "stack_frame_register_name",
             ScriptContext::stack_frame_register_name,
         );
+        engine.register_fn("patient_count", ScriptContext::patient_count);
+        engine.register_fn("patient_name", ScriptContext::patient_name);
+        engine.register_fn("patient_handle_count", ScriptContext::patient_handle_count);
+        engine.register_fn("handle_count", ScriptContext::handle_count);
+        engine.register_fn("handle_name", ScriptContext::handle_name);
+        engine.register_fn("handle_object_count", ScriptContext::handle_object_count);
+        engine.register_fn("resource_count", ScriptContext::resource_count);
+        engine.register_fn("resource_name", ScriptContext::resource_name);
+        engine.register_fn(
+            "resource_object_count",
+            ScriptContext::resource_object_count,
+        );
+        engine.register_fn("object_count", ScriptContext::object_count);
+        engine.register_fn("object_identity", ScriptContext::object_identity);
+        engine.register_fn("object_class", ScriptContext::object_class);
         engine.register_fn("source_file_count", ScriptContext::source_file_count);
         engine.register_fn(
             "source_file_event_count",
@@ -631,6 +770,122 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
             .stack_frame_registers(session_id, frame_index as usize)?
             .get(register_index as usize)
             .map(|register| register.name.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn patient_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().patients(session_id)?.len() as i64)
+    }
+
+    pub fn patient_name(&mut self, patient_index: i64) -> SwatResult<String> {
+        if patient_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .patients(session_id)?
+            .get(patient_index as usize)
+            .map(|patient| patient.name.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn patient_handle_count(&mut self, patient: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .patient_detail(session_id, patient)?
+            .map(|detail| detail.handles.len() as i64)
+            .unwrap_or(0))
+    }
+
+    pub fn handle_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().handles(session_id)?.len() as i64)
+    }
+
+    pub fn handle_name(&mut self, handle_index: i64) -> SwatResult<String> {
+        if handle_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .handles(session_id)?
+            .get(handle_index as usize)
+            .map(|handle| handle.key.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn handle_object_count(&mut self, handle: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .handle_detail(session_id, handle)?
+            .map(|detail| detail.objects.len() as i64)
+            .unwrap_or(0))
+    }
+
+    pub fn resource_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().resources(session_id)?.len() as i64)
+    }
+
+    pub fn resource_name(&mut self, resource_index: i64) -> SwatResult<String> {
+        if resource_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .resources(session_id)?
+            .get(resource_index as usize)
+            .map(|resource| resource.name.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn resource_object_count(&mut self, resource: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .resource_detail(session_id, resource)?
+            .map(|detail| detail.objects.len() as i64)
+            .unwrap_or(0))
+    }
+
+    pub fn object_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().objects(session_id)?.len() as i64)
+    }
+
+    pub fn object_identity(&mut self, object_index: i64) -> SwatResult<String> {
+        if object_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .objects(session_id)?
+            .get(object_index as usize)
+            .map(|object| object.key.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn object_class(&mut self, object: &str) -> SwatResult<String> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .object_detail(session_id, object)?
+            .and_then(|detail| detail.object.class_name)
             .unwrap_or_default())
     }
 

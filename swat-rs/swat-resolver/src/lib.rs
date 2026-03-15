@@ -21,6 +21,10 @@ pub enum ResolvedEntityKind {
     SourceFile,
     FunctionName,
     ValueKey,
+    Patient,
+    Handle,
+    Resource,
+    Object,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -250,6 +254,94 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
                     entities.insert(EntityRef { kind, name });
                 }
             }
+
+            let typed_entities = decoded.typed_entities();
+            for patient in typed_entities.patients {
+                entities.insert(EntityRef {
+                    kind: ResolvedEntityKind::Patient,
+                    name: patient.key,
+                });
+                entities.extend(patient.handle_ids.into_iter().map(|handle| EntityRef {
+                    kind: ResolvedEntityKind::Handle,
+                    name: handle,
+                }));
+                entities.extend(patient.resource_names.into_iter().map(|resource| EntityRef {
+                    kind: ResolvedEntityKind::Resource,
+                    name: resource,
+                }));
+                entities.extend(patient.object_ids.into_iter().map(|object| EntityRef {
+                    kind: ResolvedEntityKind::Object,
+                    name: object,
+                }));
+            }
+            for handle in typed_entities.handles {
+                entities.insert(EntityRef {
+                    kind: ResolvedEntityKind::Handle,
+                    name: handle.key,
+                });
+                if let Some(patient) = handle.patient {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Patient,
+                        name: patient,
+                    });
+                }
+                if let Some(resource) = handle.resource {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Resource,
+                        name: resource,
+                    });
+                }
+                entities.extend(handle.object_ids.into_iter().map(|object| EntityRef {
+                    kind: ResolvedEntityKind::Object,
+                    name: object,
+                }));
+            }
+            for resource in typed_entities.resources {
+                entities.insert(EntityRef {
+                    kind: ResolvedEntityKind::Resource,
+                    name: resource.key,
+                });
+                if let Some(patient) = resource.patient {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Patient,
+                        name: patient,
+                    });
+                }
+                if let Some(handle) = resource.handle {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Handle,
+                        name: handle,
+                    });
+                }
+                entities.extend(resource.object_ids.into_iter().map(|object| EntityRef {
+                    kind: ResolvedEntityKind::Object,
+                    name: object,
+                }));
+            }
+            for object in typed_entities.objects {
+                entities.insert(EntityRef {
+                    kind: ResolvedEntityKind::Object,
+                    name: object.key,
+                });
+                if let Some(patient) = object.patient {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Patient,
+                        name: patient,
+                    });
+                }
+                if let Some(handle) = object.handle {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Handle,
+                        name: handle,
+                    });
+                }
+                if let Some(resource) = object.resource {
+                    entities.insert(EntityRef {
+                        kind: ResolvedEntityKind::Resource,
+                        name: resource,
+                    });
+                }
+            }
         }
 
         Ok(entities.into_iter().collect())
@@ -366,6 +458,62 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
             &EntityRef {
                 kind: ResolvedEntityKind::SourceFile,
                 name: file.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_patient(
+        &self,
+        session_id: SessionId,
+        patient: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::Patient,
+                name: patient.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_handle(
+        &self,
+        session_id: SessionId,
+        handle: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::Handle,
+                name: handle.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_resource(
+        &self,
+        session_id: SessionId,
+        resource: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::Resource,
+                name: resource.to_string(),
+            },
+        )
+    }
+
+    pub fn events_for_object(
+        &self,
+        session_id: SessionId,
+        object: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::Object,
+                name: object.to_string(),
             },
         )
     }

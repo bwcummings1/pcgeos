@@ -10,8 +10,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use swat_api::{
     BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
-    FrameLocal, FrameRegister, LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec,
-    WatchpointSummary,
+    FrameLocal, FrameRegister, HandleSummary, LiveSessionApi, ObjectSummary, PatientSummary,
+    ResourceSummary, StackFrame, TraceInspector, WatchpointSpec, WatchpointSummary,
 };
 use swat_control::{
     StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
@@ -92,6 +92,22 @@ pub enum Command {
     },
     Correlation {
         correlation_id: String,
+    },
+    Patients,
+    PatientShow {
+        patient: String,
+    },
+    Handles,
+    HandleShow {
+        handle: String,
+    },
+    Resources,
+    ResourceShow {
+        resource: String,
+    },
+    Objects,
+    ObjectShow {
+        object: String,
     },
     Breakpoints,
     BreakpointShow {
@@ -262,6 +278,14 @@ impl CommandHost {
             Command::Query { expr } => self.query_events(&expr),
             Command::Entities { needle } => self.list_entities(&needle),
             Command::Correlation { correlation_id } => self.list_correlation(&correlation_id),
+            Command::Patients => self.list_patients(),
+            Command::PatientShow { patient } => self.show_patient(&patient),
+            Command::Handles => self.list_handles(),
+            Command::HandleShow { handle } => self.show_handle(&handle),
+            Command::Resources => self.list_resources(),
+            Command::ResourceShow { resource } => self.show_resource(&resource),
+            Command::Objects => self.list_objects(),
+            Command::ObjectShow { object } => self.show_object(&object),
             Command::Breakpoints => self.list_breakpoints(),
             Command::BreakpointShow { trigger_id } => self.show_breakpoint(trigger_id),
             Command::BreakpointGroups => self.list_breakpoint_groups(),
@@ -687,6 +711,243 @@ impl CommandHost {
             ),
             lines,
         ))
+    }
+
+    fn list_patients(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let patients = self.inspector().patients(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} patient(s)", patients.len()),
+            patients.iter().map(format_patient_summary).collect(),
+        ))
+    }
+
+    fn show_patient(&self, patient: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .patient_detail(session_id, patient)?
+            .ok_or_else(|| SwatError::new(format!("unknown patient {patient}")))?;
+        let mut lines = vec![
+            format!("patient={}", detail.patient.name),
+            format!("key={}", detail.patient.key),
+            format!(
+                "id={}",
+                detail.patient.identifier.as_deref().unwrap_or("-")
+            ),
+            format!("role={}", detail.patient.role.as_deref().unwrap_or("-")),
+            format!(
+                "status={}",
+                detail.patient.status.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "runtime={}",
+                detail.patient.runtime.as_deref().unwrap_or("-")
+            ),
+            format!("path={}", detail.patient.path.as_deref().unwrap_or("-")),
+            format!(
+                "default={}",
+                detail
+                    .patient
+                    .is_default
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!("events={}", detail.patient.event_count),
+            format!("handles={}", join_or_dash(&detail.handles)),
+            format!("resources={}", join_or_dash(&detail.resources)),
+            format!("objects={}", join_or_dash(&detail.objects)),
+            format!("sources={}", join_or_dash(&detail.source_files)),
+        ];
+        if !detail.event_ids.is_empty() {
+            lines.push(format!(
+                "event_ids={}",
+                detail
+                    .event_ids
+                    .iter()
+                    .map(|event_id| event_id.raw().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        Ok(CommandOutput::new(format!("patient {}", detail.patient.name), lines))
+    }
+
+    fn list_handles(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let handles = self.inspector().handles(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} handle(s)", handles.len()),
+            handles.iter().map(format_handle_summary).collect(),
+        ))
+    }
+
+    fn show_handle(&self, handle: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .handle_detail(session_id, handle)?
+            .ok_or_else(|| SwatError::new(format!("unknown handle {handle}")))?;
+        let mut lines = vec![
+            format!("handle={}", detail.handle.key),
+            format!("name={}", detail.handle.name.as_deref().unwrap_or("-")),
+            format!(
+                "patient={}",
+                detail.handle.patient.as_deref().unwrap_or("-")
+            ),
+            format!("owner={}", detail.handle.owner.as_deref().unwrap_or("-")),
+            format!(
+                "resource={}",
+                detail.handle.resource.as_deref().unwrap_or("-")
+            ),
+            format!("kind={}", detail.handle.kind.as_deref().unwrap_or("-")),
+            format!(
+                "address={}",
+                detail.handle.address.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "segment={}",
+                detail.handle.segment.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "size={}",
+                detail
+                    .handle
+                    .size
+                    .map(|size| size.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "attached={}",
+                detail
+                    .handle
+                    .attached
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!("state={}", join_or_dash(&detail.handle.state_flags)),
+            format!("objects={}", join_or_dash(&detail.objects)),
+            format!("sources={}", join_or_dash(&detail.source_files)),
+        ];
+        if !detail.event_ids.is_empty() {
+            lines.push(format!(
+                "event_ids={}",
+                detail
+                    .event_ids
+                    .iter()
+                    .map(|event_id| event_id.raw().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        Ok(CommandOutput::new(format!("handle {}", detail.handle.key), lines))
+    }
+
+    fn list_resources(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let resources = self.inspector().resources(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} resource(s)", resources.len()),
+            resources.iter().map(format_resource_summary).collect(),
+        ))
+    }
+
+    fn show_resource(&self, resource: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .resource_detail(session_id, resource)?
+            .ok_or_else(|| SwatError::new(format!("unknown resource {resource}")))?;
+        let mut lines = vec![
+            format!("resource={}", detail.resource.name),
+            format!("key={}", detail.resource.key),
+            format!(
+                "id={}",
+                detail.resource.identifier.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "patient={}",
+                detail.resource.patient.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "handle={}",
+                detail.resource.handle.as_deref().unwrap_or("-")
+            ),
+            format!("kind={}", detail.resource.kind.as_deref().unwrap_or("-")),
+            format!(
+                "source_file={}",
+                detail.resource.source_file.as_deref().unwrap_or("-")
+            ),
+            format!("objects={}", join_or_dash(&detail.objects)),
+            format!("sources={}", join_or_dash(&detail.source_files)),
+        ];
+        if !detail.event_ids.is_empty() {
+            lines.push(format!(
+                "event_ids={}",
+                detail
+                    .event_ids
+                    .iter()
+                    .map(|event_id| event_id.raw().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        Ok(CommandOutput::new(
+            format!("resource {}", detail.resource.name),
+            lines,
+        ))
+    }
+
+    fn list_objects(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let objects = self.inspector().objects(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} object(s)", objects.len()),
+            objects.iter().map(format_object_summary).collect(),
+        ))
+    }
+
+    fn show_object(&self, object: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .object_detail(session_id, object)?
+            .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+        let mut lines = vec![
+            format!("object={}", detail.object.key),
+            format!("name={}", detail.object.name.as_deref().unwrap_or("-")),
+            format!(
+                "class={}",
+                detail.object.class_name.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "patient={}",
+                detail.object.patient.as_deref().unwrap_or("-")
+            ),
+            format!("handle={}", detail.object.handle.as_deref().unwrap_or("-")),
+            format!(
+                "resource={}",
+                detail.object.resource.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "address={}",
+                detail.object.address.as_deref().unwrap_or("-")
+            ),
+            format!("state={}", join_or_dash(&detail.object.state_flags)),
+            format!("sources={}", join_or_dash(&detail.source_files)),
+        ];
+        if !detail.event_ids.is_empty() {
+            lines.push(format!(
+                "event_ids={}",
+                detail
+                    .event_ids
+                    .iter()
+                    .map(|event_id| event_id.raw().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        Ok(CommandOutput::new(format!("object {}", detail.object.key), lines))
     }
 
     fn list_triggers(&self) -> CommandOutput {
@@ -2031,6 +2292,30 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
             needle: rest.trim().to_string(),
         });
     }
+    if matches!(trimmed, "patient" | "patients") {
+        return Ok(Command::Patients);
+    }
+    if let Some(rest) = trimmed.strip_prefix("patient ") {
+        return parse_entity_show(rest, "patient").map(|patient| Command::PatientShow { patient });
+    }
+    if matches!(trimmed, "handle" | "handles") {
+        return Ok(Command::Handles);
+    }
+    if let Some(rest) = trimmed.strip_prefix("handle ") {
+        return parse_entity_show(rest, "handle").map(|handle| Command::HandleShow { handle });
+    }
+    if matches!(trimmed, "resource" | "resources") {
+        return Ok(Command::Resources);
+    }
+    if let Some(rest) = trimmed.strip_prefix("resource ") {
+        return parse_entity_show(rest, "resource").map(|resource| Command::ResourceShow { resource });
+    }
+    if matches!(trimmed, "object" | "objects") {
+        return Ok(Command::Objects);
+    }
+    if let Some(rest) = trimmed.strip_prefix("object ") {
+        return parse_entity_show(rest, "object").map(|object| Command::ObjectShow { object });
+    }
     if let Some(rest) = trimmed.strip_prefix("correlation ") {
         return Ok(Command::Correlation {
             correlation_id: rest.trim().to_string(),
@@ -2149,6 +2434,15 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
     Ok(Command::Span {
         boundary_id: BoundaryId::from_raw(parse_u64(boundary, "boundary id")?),
     })
+}
+
+fn parse_entity_show(rest: &str, label: &str) -> SwatResult<String> {
+    let trimmed = rest.trim();
+    let value = trimmed.strip_prefix("show ").map(str::trim).unwrap_or(trimmed);
+    if value.is_empty() {
+        return Err(SwatError::new(format!("{label} show requires an identifier")));
+    }
+    Ok(value.to_string())
 }
 
 fn parse_breakpoint_command(rest: &str) -> SwatResult<Command> {
@@ -2910,6 +3204,66 @@ fn format_frame_register(register: &FrameRegister) -> String {
         register.value_kind.label(),
         register.preview
     )
+}
+
+fn format_patient_summary(patient: &PatientSummary) -> String {
+    format!(
+        "patient={} role={} status={} runtime={} handles={} resources={} objects={} events={}",
+        patient.name,
+        patient.role.as_deref().unwrap_or("-"),
+        patient.status.as_deref().unwrap_or("-"),
+        patient.runtime.as_deref().unwrap_or("-"),
+        patient.handle_count,
+        patient.resource_count,
+        patient.object_count,
+        patient.event_count
+    )
+}
+
+fn format_handle_summary(handle: &HandleSummary) -> String {
+    format!(
+        "handle={} patient={} resource={} kind={} state={} objects={} events={}",
+        handle.key,
+        handle.patient.as_deref().unwrap_or("-"),
+        handle.resource.as_deref().unwrap_or("-"),
+        handle.kind.as_deref().unwrap_or("-"),
+        join_or_dash(&handle.state_flags),
+        handle.object_count,
+        handle.event_count
+    )
+}
+
+fn format_resource_summary(resource: &ResourceSummary) -> String {
+    format!(
+        "resource={} patient={} handle={} kind={} objects={} events={}",
+        resource.name,
+        resource.patient.as_deref().unwrap_or("-"),
+        resource.handle.as_deref().unwrap_or("-"),
+        resource.kind.as_deref().unwrap_or("-"),
+        resource.object_count,
+        resource.event_count
+    )
+}
+
+fn format_object_summary(object: &ObjectSummary) -> String {
+    format!(
+        "object={} class={} patient={} handle={} resource={} state={} events={}",
+        object.key,
+        object.class_name.as_deref().unwrap_or("-"),
+        object.patient.as_deref().unwrap_or("-"),
+        object.handle.as_deref().unwrap_or("-"),
+        object.resource.as_deref().unwrap_or("-"),
+        join_or_dash(&object.state_flags),
+        object.event_count
+    )
+}
+
+fn join_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(",")
+    }
 }
 
 fn short_stack_frame_source(frame: &StackFrame) -> Option<String> {

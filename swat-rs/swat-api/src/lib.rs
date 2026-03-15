@@ -23,7 +23,10 @@ use swat_source::{
     inspect_event_source, is_real_source_path, load_source_snippet, resolve_event_source,
 };
 use swat_store::SwatStore;
-use swat_value::{DecodedValue, QueriedValue, ValuePresentation, decode_event_artifacts};
+use swat_value::{
+    DecodedValue, HandleArtifactRecord, ObjectArtifactRecord, PatientArtifactRecord, QueriedValue,
+    ResourceArtifactRecord, TypedEntityArtifacts, ValuePresentation, decode_event_artifacts,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceMatch {
@@ -105,6 +108,98 @@ pub struct StackFrameInspection {
     pub frame: StackFrame,
     pub locals: Vec<FrameLocal>,
     pub registers: Vec<FrameRegister>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatientSummary {
+    pub key: String,
+    pub name: String,
+    pub identifier: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    pub runtime: Option<String>,
+    pub path: Option<String>,
+    pub is_default: Option<bool>,
+    pub event_count: usize,
+    pub handle_count: usize,
+    pub resource_count: usize,
+    pub object_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatientDetail {
+    pub patient: PatientSummary,
+    pub handles: Vec<String>,
+    pub resources: Vec<String>,
+    pub objects: Vec<String>,
+    pub source_files: Vec<String>,
+    pub event_ids: Vec<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandleSummary {
+    pub key: String,
+    pub name: Option<String>,
+    pub patient: Option<String>,
+    pub owner: Option<String>,
+    pub resource: Option<String>,
+    pub kind: Option<String>,
+    pub address: Option<String>,
+    pub segment: Option<String>,
+    pub size: Option<u64>,
+    pub attached: Option<bool>,
+    pub state_flags: Vec<String>,
+    pub event_count: usize,
+    pub object_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandleDetail {
+    pub handle: HandleSummary,
+    pub objects: Vec<String>,
+    pub source_files: Vec<String>,
+    pub event_ids: Vec<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceSummary {
+    pub key: String,
+    pub name: String,
+    pub identifier: Option<String>,
+    pub patient: Option<String>,
+    pub handle: Option<String>,
+    pub kind: Option<String>,
+    pub source_file: Option<String>,
+    pub event_count: usize,
+    pub object_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceDetail {
+    pub resource: ResourceSummary,
+    pub objects: Vec<String>,
+    pub source_files: Vec<String>,
+    pub event_ids: Vec<EventId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectSummary {
+    pub key: String,
+    pub name: Option<String>,
+    pub class_name: Option<String>,
+    pub patient: Option<String>,
+    pub handle: Option<String>,
+    pub resource: Option<String>,
+    pub address: Option<String>,
+    pub state_flags: Vec<String>,
+    pub event_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectDetail {
+    pub object: ObjectSummary,
+    pub source_files: Vec<String>,
+    pub event_ids: Vec<EventId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -590,6 +685,118 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
             .unwrap_or_default())
     }
 
+    pub fn event_typed_entities(&self, event: &EventEnvelope) -> SwatResult<TypedEntityArtifacts> {
+        let mut patients = BTreeMap::new();
+        let mut handles = BTreeMap::new();
+        let mut resources = BTreeMap::new();
+        let mut objects = BTreeMap::new();
+        for decoded in self.decoded_artifacts(event)? {
+            let typed = decoded.typed_entities();
+            for patient in typed.patients {
+                patients.insert(patient.key.clone(), patient);
+            }
+            for handle in typed.handles {
+                handles.insert(handle.key.clone(), handle);
+            }
+            for resource in typed.resources {
+                resources.insert(resource.key.clone(), resource);
+            }
+            for object in typed.objects {
+                objects.insert(object.key.clone(), object);
+            }
+        }
+        Ok(TypedEntityArtifacts {
+            patients: patients.into_values().collect(),
+            handles: handles.into_values().collect(),
+            resources: resources.into_values().collect(),
+            objects: objects.into_values().collect(),
+        })
+    }
+
+    pub fn patients(&self, session_id: SessionId) -> SwatResult<Vec<PatientSummary>> {
+        Ok(self
+            .typed_entity_index(session_id)?
+            .patients
+            .into_values()
+            .map(PatientSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn patient_detail(
+        &self,
+        session_id: SessionId,
+        patient: &str,
+    ) -> SwatResult<Option<PatientDetail>> {
+        let mut index = self.typed_entity_index(session_id)?;
+        Ok(index
+            .patients
+            .remove(patient)
+            .map(PatientSummaryBuilder::build_detail))
+    }
+
+    pub fn handles(&self, session_id: SessionId) -> SwatResult<Vec<HandleSummary>> {
+        Ok(self
+            .typed_entity_index(session_id)?
+            .handles
+            .into_values()
+            .map(HandleSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn handle_detail(
+        &self,
+        session_id: SessionId,
+        handle: &str,
+    ) -> SwatResult<Option<HandleDetail>> {
+        let mut index = self.typed_entity_index(session_id)?;
+        Ok(index
+            .handles
+            .remove(handle)
+            .map(HandleSummaryBuilder::build_detail))
+    }
+
+    pub fn resources(&self, session_id: SessionId) -> SwatResult<Vec<ResourceSummary>> {
+        Ok(self
+            .typed_entity_index(session_id)?
+            .resources
+            .into_values()
+            .map(ResourceSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn resource_detail(
+        &self,
+        session_id: SessionId,
+        resource: &str,
+    ) -> SwatResult<Option<ResourceDetail>> {
+        let mut index = self.typed_entity_index(session_id)?;
+        Ok(index
+            .resources
+            .remove(resource)
+            .map(ResourceSummaryBuilder::build_detail))
+    }
+
+    pub fn objects(&self, session_id: SessionId) -> SwatResult<Vec<ObjectSummary>> {
+        Ok(self
+            .typed_entity_index(session_id)?
+            .objects
+            .into_values()
+            .map(ObjectSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn object_detail(
+        &self,
+        session_id: SessionId,
+        object: &str,
+    ) -> SwatResult<Option<ObjectDetail>> {
+        let mut index = self.typed_entity_index(session_id)?;
+        Ok(index
+            .objects
+            .remove(object)
+            .map(ObjectSummaryBuilder::build_detail))
+    }
+
     pub fn entity_relations(&self, session_id: SessionId) -> SwatResult<Vec<EntityRelation>> {
         TraceResolver::new(self.store).entity_relations(session_id)
     }
@@ -628,6 +835,38 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         file: &str,
     ) -> SwatResult<Vec<EventEnvelope>> {
         TraceResolver::new(self.store).events_for_source_file(session_id, file)
+    }
+
+    pub fn events_for_patient(
+        &self,
+        session_id: SessionId,
+        patient: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_patient(session_id, patient)
+    }
+
+    pub fn events_for_handle(
+        &self,
+        session_id: SessionId,
+        handle: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_handle(session_id, handle)
+    }
+
+    pub fn events_for_resource(
+        &self,
+        session_id: SessionId,
+        resource: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_resource(session_id, resource)
+    }
+
+    pub fn events_for_object(
+        &self,
+        session_id: SessionId,
+        object: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_object(session_id, object)
     }
 
     pub fn source_files(&self, session_id: SessionId) -> SwatResult<Vec<SourceFileSummary>> {
@@ -723,6 +962,35 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         boundary_id: BoundaryId,
     ) -> ReplayPlan {
         ReplayPlan::for_boundary(&self.session_events(session_id), boundary_id)
+    }
+
+    fn typed_entity_index(&self, session_id: SessionId) -> SwatResult<TypedEntityIndex> {
+        let mut index = TypedEntityIndex::default();
+
+        for event in self.session_events(session_id) {
+            let source_file = extract_event_source_location(self.store, &event)?
+                .map(|location| location.file);
+            let event_id = event.event_id;
+            let mut typed_entities = TypedEntityArtifacts::default();
+            for decoded in self.decoded_artifacts(&event)? {
+                typed_entities.extend(decoded.typed_entities());
+            }
+
+            for patient in typed_entities.patients {
+                index.observe_patient(patient, event_id, source_file.clone());
+            }
+            for handle in typed_entities.handles {
+                index.observe_handle(handle, event_id, source_file.clone());
+            }
+            for resource in typed_entities.resources {
+                index.observe_resource(resource, event_id, source_file.clone());
+            }
+            for object in typed_entities.objects {
+                index.observe_object(object, event_id, source_file.clone());
+            }
+        }
+
+        Ok(index)
     }
 
     fn build_stack_frame(
@@ -954,6 +1222,546 @@ fn truncate_preview(mut value: String, limit: usize) -> String {
     value
 }
 
+#[derive(Default)]
+struct TypedEntityIndex {
+    patients: BTreeMap<String, PatientSummaryBuilder>,
+    handles: BTreeMap<String, HandleSummaryBuilder>,
+    resources: BTreeMap<String, ResourceSummaryBuilder>,
+    objects: BTreeMap<String, ObjectSummaryBuilder>,
+}
+
+impl TypedEntityIndex {
+    fn observe_patient(
+        &mut self,
+        record: PatientArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        let builder = self
+            .patients
+            .entry(record.key.clone())
+            .or_insert_with(|| PatientSummaryBuilder::new(&record.key, &record.name));
+        builder.observe_record(&record, event_id, source_file.clone());
+
+        for handle in &record.handle_ids {
+            builder.handles.insert(handle.clone());
+        }
+        for resource in &record.resource_names {
+            builder.resources.insert(resource.clone());
+        }
+        for object in &record.object_ids {
+            builder.objects.insert(object.clone());
+        }
+    }
+
+    fn observe_handle(
+        &mut self,
+        record: HandleArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        {
+            let builder = self
+                .handles
+                .entry(record.key.clone())
+                .or_insert_with(|| HandleSummaryBuilder::new(&record.key));
+            builder.observe_record(&record, event_id, source_file.clone());
+        }
+
+        if let Some(patient) = &record.patient {
+            self.patients
+                .entry(patient.clone())
+                .or_insert_with(|| PatientSummaryBuilder::new(patient, patient))
+                .handles
+                .insert(record.key.clone());
+        }
+        if let Some(resource) = &record.resource {
+            self.resources
+                .entry(resource.clone())
+                .or_insert_with(|| ResourceSummaryBuilder::new(resource, resource))
+                .handle = Some(record.key.clone());
+        }
+        for object in &record.object_ids {
+            self.handles
+                .entry(record.key.clone())
+                .or_insert_with(|| HandleSummaryBuilder::new(&record.key))
+                .objects
+                .insert(object.clone());
+            if let Some(patient) = &record.patient {
+                self.patients
+                    .entry(patient.clone())
+                    .or_insert_with(|| PatientSummaryBuilder::new(patient, patient))
+                    .objects
+                    .insert(object.clone());
+            }
+        }
+    }
+
+    fn observe_resource(
+        &mut self,
+        record: ResourceArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        {
+            let builder = self
+                .resources
+                .entry(record.key.clone())
+                .or_insert_with(|| ResourceSummaryBuilder::new(&record.key, &record.name));
+            builder.observe_record(&record, event_id, source_file.clone());
+        }
+
+        if let Some(patient) = &record.patient {
+            self.patients
+                .entry(patient.clone())
+                .or_insert_with(|| PatientSummaryBuilder::new(patient, patient))
+                .resources
+                .insert(record.key.clone());
+        }
+        if let Some(handle) = &record.handle {
+            self.handles
+                .entry(handle.clone())
+                .or_insert_with(|| HandleSummaryBuilder::new(handle))
+                .resource = Some(record.key.clone());
+        }
+        for object in &record.object_ids {
+            self.resources
+                .entry(record.key.clone())
+                .or_insert_with(|| ResourceSummaryBuilder::new(&record.key, &record.name))
+                .objects
+                .insert(object.clone());
+            if let Some(patient) = &record.patient {
+                self.patients
+                    .entry(patient.clone())
+                    .or_insert_with(|| PatientSummaryBuilder::new(patient, patient))
+                    .objects
+                    .insert(object.clone());
+            }
+            if let Some(handle) = &record.handle {
+                self.handles
+                    .entry(handle.clone())
+                    .or_insert_with(|| HandleSummaryBuilder::new(handle))
+                    .objects
+                    .insert(object.clone());
+            }
+        }
+    }
+
+    fn observe_object(
+        &mut self,
+        record: ObjectArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        {
+            let builder = self
+                .objects
+                .entry(record.key.clone())
+                .or_insert_with(|| ObjectSummaryBuilder::new(&record.key));
+            builder.observe_record(&record, event_id, source_file.clone());
+        }
+
+        if let Some(patient) = &record.patient {
+            self.patients
+                .entry(patient.clone())
+                .or_insert_with(|| PatientSummaryBuilder::new(patient, patient))
+                .objects
+                .insert(record.key.clone());
+        }
+        if let Some(handle) = &record.handle {
+            self.handles
+                .entry(handle.clone())
+                .or_insert_with(|| HandleSummaryBuilder::new(handle))
+                .objects
+                .insert(record.key.clone());
+        }
+        if let Some(resource) = &record.resource {
+            self.resources
+                .entry(resource.clone())
+                .or_insert_with(|| ResourceSummaryBuilder::new(resource, resource))
+                .objects
+                .insert(record.key.clone());
+        }
+    }
+}
+
+struct PatientSummaryBuilder {
+    key: String,
+    name: String,
+    identifier: Option<String>,
+    role: Option<String>,
+    status: Option<String>,
+    runtime: Option<String>,
+    path: Option<String>,
+    is_default: Option<bool>,
+    event_ids: BTreeSet<EventId>,
+    handles: BTreeSet<String>,
+    resources: BTreeSet<String>,
+    objects: BTreeSet<String>,
+    source_files: BTreeSet<String>,
+}
+
+impl PatientSummaryBuilder {
+    fn new(key: &str, name: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            name: name.to_string(),
+            identifier: None,
+            role: None,
+            status: None,
+            runtime: None,
+            path: None,
+            is_default: None,
+            event_ids: BTreeSet::new(),
+            handles: BTreeSet::new(),
+            resources: BTreeSet::new(),
+            objects: BTreeSet::new(),
+            source_files: BTreeSet::new(),
+        }
+    }
+
+    fn observe_record(
+        &mut self,
+        record: &PatientArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        self.name = record.name.clone();
+        maybe_set_option(&mut self.identifier, &record.identifier);
+        maybe_set_option(&mut self.role, &record.role);
+        maybe_set_option(&mut self.status, &record.status);
+        maybe_set_option(&mut self.runtime, &record.runtime);
+        maybe_set_option(&mut self.path, &record.path);
+        if self.is_default.is_none() {
+            self.is_default = record.is_default;
+        }
+        self.event_ids.insert(event_id);
+        if let Some(source_file) = source_file {
+            self.source_files.insert(source_file);
+        }
+        self.handles.extend(record.handle_ids.iter().cloned());
+        self.resources
+            .extend(record.resource_names.iter().cloned());
+        self.objects.extend(record.object_ids.iter().cloned());
+    }
+
+    fn build(self) -> PatientSummary {
+        PatientSummary {
+            key: self.key,
+            name: self.name,
+            identifier: self.identifier,
+            role: self.role,
+            status: self.status,
+            runtime: self.runtime,
+            path: self.path,
+            is_default: self.is_default,
+            event_count: self.event_ids.len(),
+            handle_count: self.handles.len(),
+            resource_count: self.resources.len(),
+            object_count: self.objects.len(),
+        }
+    }
+
+    fn build_detail(self) -> PatientDetail {
+        let summary = PatientSummary {
+            key: self.key,
+            name: self.name,
+            identifier: self.identifier,
+            role: self.role,
+            status: self.status,
+            runtime: self.runtime,
+            path: self.path,
+            is_default: self.is_default,
+            event_count: self.event_ids.len(),
+            handle_count: self.handles.len(),
+            resource_count: self.resources.len(),
+            object_count: self.objects.len(),
+        };
+        PatientDetail {
+            patient: summary,
+            handles: self.handles.into_iter().collect(),
+            resources: self.resources.into_iter().collect(),
+            objects: self.objects.into_iter().collect(),
+            source_files: self.source_files.into_iter().collect(),
+            event_ids: self.event_ids.into_iter().collect(),
+        }
+    }
+}
+
+struct HandleSummaryBuilder {
+    key: String,
+    name: Option<String>,
+    patient: Option<String>,
+    owner: Option<String>,
+    resource: Option<String>,
+    kind: Option<String>,
+    address: Option<String>,
+    segment: Option<String>,
+    size: Option<u64>,
+    attached: Option<bool>,
+    state_flags: BTreeSet<String>,
+    event_ids: BTreeSet<EventId>,
+    objects: BTreeSet<String>,
+    source_files: BTreeSet<String>,
+}
+
+impl HandleSummaryBuilder {
+    fn new(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            name: None,
+            patient: None,
+            owner: None,
+            resource: None,
+            kind: None,
+            address: None,
+            segment: None,
+            size: None,
+            attached: None,
+            state_flags: BTreeSet::new(),
+            event_ids: BTreeSet::new(),
+            objects: BTreeSet::new(),
+            source_files: BTreeSet::new(),
+        }
+    }
+
+    fn observe_record(
+        &mut self,
+        record: &HandleArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        maybe_set_option(&mut self.name, &record.name);
+        maybe_set_option(&mut self.patient, &record.patient);
+        maybe_set_option(&mut self.owner, &record.owner);
+        maybe_set_option(&mut self.resource, &record.resource);
+        maybe_set_option(&mut self.kind, &record.kind);
+        maybe_set_option(&mut self.address, &record.address);
+        maybe_set_option(&mut self.segment, &record.segment);
+        if self.size.is_none() {
+            self.size = record.size;
+        }
+        if self.attached.is_none() {
+            self.attached = record.attached;
+        }
+        self.state_flags
+            .extend(record.state_flags.iter().cloned());
+        self.event_ids.insert(event_id);
+        if let Some(source_file) = source_file {
+            self.source_files.insert(source_file);
+        }
+        self.objects.extend(record.object_ids.iter().cloned());
+    }
+
+    fn build(self) -> HandleSummary {
+        HandleSummary {
+            key: self.key,
+            name: self.name,
+            patient: self.patient,
+            owner: self.owner,
+            resource: self.resource,
+            kind: self.kind,
+            address: self.address,
+            segment: self.segment,
+            size: self.size,
+            attached: self.attached,
+            state_flags: self.state_flags.into_iter().collect(),
+            event_count: self.event_ids.len(),
+            object_count: self.objects.len(),
+        }
+    }
+
+    fn build_detail(self) -> HandleDetail {
+        let summary = HandleSummary {
+            key: self.key,
+            name: self.name,
+            patient: self.patient,
+            owner: self.owner,
+            resource: self.resource,
+            kind: self.kind,
+            address: self.address,
+            segment: self.segment,
+            size: self.size,
+            attached: self.attached,
+            state_flags: self.state_flags.iter().cloned().collect(),
+            event_count: self.event_ids.len(),
+            object_count: self.objects.len(),
+        };
+        HandleDetail {
+            handle: summary,
+            objects: self.objects.into_iter().collect(),
+            source_files: self.source_files.into_iter().collect(),
+            event_ids: self.event_ids.into_iter().collect(),
+        }
+    }
+}
+
+struct ResourceSummaryBuilder {
+    key: String,
+    name: String,
+    identifier: Option<String>,
+    patient: Option<String>,
+    handle: Option<String>,
+    kind: Option<String>,
+    source_file: Option<String>,
+    event_ids: BTreeSet<EventId>,
+    objects: BTreeSet<String>,
+    source_files: BTreeSet<String>,
+}
+
+impl ResourceSummaryBuilder {
+    fn new(key: &str, name: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            name: name.to_string(),
+            identifier: None,
+            patient: None,
+            handle: None,
+            kind: None,
+            source_file: None,
+            event_ids: BTreeSet::new(),
+            objects: BTreeSet::new(),
+            source_files: BTreeSet::new(),
+        }
+    }
+
+    fn observe_record(
+        &mut self,
+        record: &ResourceArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        self.name = record.name.clone();
+        maybe_set_option(&mut self.identifier, &record.identifier);
+        maybe_set_option(&mut self.patient, &record.patient);
+        maybe_set_option(&mut self.handle, &record.handle);
+        maybe_set_option(&mut self.kind, &record.kind);
+        maybe_set_option(&mut self.source_file, &record.source_file);
+        self.event_ids.insert(event_id);
+        if let Some(source_file) = source_file {
+            self.source_files.insert(source_file);
+        }
+        self.objects.extend(record.object_ids.iter().cloned());
+    }
+
+    fn build(self) -> ResourceSummary {
+        ResourceSummary {
+            key: self.key,
+            name: self.name,
+            identifier: self.identifier,
+            patient: self.patient,
+            handle: self.handle,
+            kind: self.kind,
+            source_file: self.source_file,
+            event_count: self.event_ids.len(),
+            object_count: self.objects.len(),
+        }
+    }
+
+    fn build_detail(self) -> ResourceDetail {
+        let summary = ResourceSummary {
+            key: self.key,
+            name: self.name,
+            identifier: self.identifier,
+            patient: self.patient,
+            handle: self.handle,
+            kind: self.kind,
+            source_file: self.source_file,
+            event_count: self.event_ids.len(),
+            object_count: self.objects.len(),
+        };
+        ResourceDetail {
+            resource: summary,
+            objects: self.objects.into_iter().collect(),
+            source_files: self.source_files.into_iter().collect(),
+            event_ids: self.event_ids.into_iter().collect(),
+        }
+    }
+}
+
+struct ObjectSummaryBuilder {
+    key: String,
+    name: Option<String>,
+    class_name: Option<String>,
+    patient: Option<String>,
+    handle: Option<String>,
+    resource: Option<String>,
+    address: Option<String>,
+    state_flags: BTreeSet<String>,
+    event_ids: BTreeSet<EventId>,
+    source_files: BTreeSet<String>,
+}
+
+impl ObjectSummaryBuilder {
+    fn new(key: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            name: None,
+            class_name: None,
+            patient: None,
+            handle: None,
+            resource: None,
+            address: None,
+            state_flags: BTreeSet::new(),
+            event_ids: BTreeSet::new(),
+            source_files: BTreeSet::new(),
+        }
+    }
+
+    fn observe_record(
+        &mut self,
+        record: &ObjectArtifactRecord,
+        event_id: EventId,
+        source_file: Option<String>,
+    ) {
+        maybe_set_option(&mut self.name, &record.name);
+        maybe_set_option(&mut self.class_name, &record.class_name);
+        maybe_set_option(&mut self.patient, &record.patient);
+        maybe_set_option(&mut self.handle, &record.handle);
+        maybe_set_option(&mut self.resource, &record.resource);
+        maybe_set_option(&mut self.address, &record.address);
+        self.state_flags
+            .extend(record.state_flags.iter().cloned());
+        self.event_ids.insert(event_id);
+        if let Some(source_file) = source_file {
+            self.source_files.insert(source_file);
+        }
+    }
+
+    fn build(self) -> ObjectSummary {
+        ObjectSummary {
+            key: self.key,
+            name: self.name,
+            class_name: self.class_name,
+            patient: self.patient,
+            handle: self.handle,
+            resource: self.resource,
+            address: self.address,
+            state_flags: self.state_flags.into_iter().collect(),
+            event_count: self.event_ids.len(),
+        }
+    }
+
+    fn build_detail(self) -> ObjectDetail {
+        let summary = ObjectSummary {
+            key: self.key,
+            name: self.name,
+            class_name: self.class_name,
+            patient: self.patient,
+            handle: self.handle,
+            resource: self.resource,
+            address: self.address,
+            state_flags: self.state_flags.iter().cloned().collect(),
+            event_count: self.event_ids.len(),
+        };
+        ObjectDetail {
+            object: summary,
+            source_files: self.source_files.into_iter().collect(),
+            event_ids: self.event_ids.into_iter().collect(),
+        }
+    }
+}
+
 struct SourceFileSummaryBuilder {
     file: String,
     event_count: usize,
@@ -1008,6 +1816,12 @@ fn maybe_set_u64(slot: &mut Option<u64>, value: Option<QueriedValue>) -> SwatRes
     })?;
     *slot = Some(parsed);
     Ok(())
+}
+
+fn maybe_set_option<T: Clone>(slot: &mut Option<T>, value: &Option<T>) {
+    if slot.is_none() {
+        *slot = value.clone();
+    }
 }
 
 pub struct LiveSessionApi<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> {

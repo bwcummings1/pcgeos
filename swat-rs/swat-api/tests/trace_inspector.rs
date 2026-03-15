@@ -112,8 +112,8 @@ def emit(record):
 
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested"})
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}})
-emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}, "patient": {"name": "ui", "id": "patient-ui", "role": "application", "status": "running", "runtime": "pcgeos", "path": "/repo/UI.geo", "default": True, "handles": [{"id": "h:1001", "kind": "resource", "state": ["in", "fixed"], "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication", "state": ["usable"]}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "kind": "ui", "source_file": "/repo/ui.goc", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource", "address": "^lui:0002"}]}})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "attached": True, "size": 8192}})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
@@ -190,6 +190,25 @@ time.sleep(0.1)
     assert_eq!(
         inspector
             .events_for_value_key(session_id, "agent.state")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(inspector.events_for_patient(session_id, "ui").unwrap().len(), 2);
+    assert_eq!(
+        inspector.events_for_handle(session_id, "h:1001").unwrap().len(),
+        2
+    );
+    assert_eq!(
+        inspector
+            .events_for_resource(session_id, "AppResource")
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        inspector
+            .events_for_object(session_id, "^lui:0002")
             .unwrap()
             .len(),
         1
@@ -272,6 +291,65 @@ time.sleep(0.1)
             .collect::<Vec<_>>(),
         vec!["pc", "phase"]
     );
+
+    let event_entities = inspector.event_typed_entities(&correlated[1]).unwrap();
+    assert_eq!(event_entities.patients.len(), 1);
+    assert_eq!(event_entities.handles.len(), 1);
+    assert_eq!(event_entities.resources.len(), 1);
+
+    let patients = inspector.patients(session_id).unwrap();
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0].name, "ui");
+    assert_eq!(patients[0].handle_count, 1);
+    assert_eq!(patients[0].resource_count, 1);
+    assert_eq!(patients[0].object_count, 1);
+    assert_eq!(patients[0].runtime.as_deref(), Some("pcgeos"));
+    assert_eq!(patients[0].path.as_deref(), Some("/repo/UI.geo"));
+    assert_eq!(patients[0].is_default, Some(true));
+
+    let patient_detail = inspector.patient_detail(session_id, "ui").unwrap().unwrap();
+    assert_eq!(patient_detail.handles, vec!["h:1001".to_string()]);
+    assert_eq!(patient_detail.resources, vec!["AppResource".to_string()]);
+    assert_eq!(patient_detail.objects, vec!["^lui:0002".to_string()]);
+    assert_eq!(patient_detail.source_files, vec!["/tmp/agent.py".to_string()]);
+
+    let handles = inspector.handles(session_id).unwrap();
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].key, "h:1001");
+    assert_eq!(handles[0].patient.as_deref(), Some("ui"));
+    assert_eq!(handles[0].resource.as_deref(), Some("AppResource"));
+    assert_eq!(handles[0].size, Some(8192));
+    assert_eq!(handles[0].attached, Some(true));
+    assert_eq!(handles[0].object_count, 1);
+
+    let handle_detail = inspector.handle_detail(session_id, "h:1001").unwrap().unwrap();
+    assert_eq!(handle_detail.objects, vec!["^lui:0002".to_string()]);
+    assert_eq!(handle_detail.source_files, vec!["/tmp/agent.py".to_string()]);
+
+    let resources = inspector.resources(session_id).unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].name, "AppResource");
+    assert_eq!(resources[0].patient.as_deref(), Some("ui"));
+    assert_eq!(resources[0].handle.as_deref(), Some("h:1001"));
+    assert_eq!(resources[0].source_file.as_deref(), Some("/repo/ui.goc"));
+
+    let resource_detail = inspector
+        .resource_detail(session_id, "AppResource")
+        .unwrap()
+        .unwrap();
+    assert_eq!(resource_detail.objects, vec!["^lui:0002".to_string()]);
+
+    let objects = inspector.objects(session_id).unwrap();
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].key, "^lui:0002");
+    assert_eq!(objects[0].class_name.as_deref(), Some("GenApplication"));
+    assert_eq!(objects[0].patient.as_deref(), Some("ui"));
+    assert_eq!(objects[0].handle.as_deref(), Some("h:1001"));
+    assert_eq!(objects[0].resource.as_deref(), Some("AppResource"));
+
+    let object_detail = inspector.object_detail(session_id, "^lui:0002").unwrap().unwrap();
+    assert_eq!(object_detail.object.address.as_deref(), Some("^lui:0002"));
+    assert_eq!(object_detail.source_files, vec!["/tmp/agent.py".to_string()]);
 }
 
 #[test]

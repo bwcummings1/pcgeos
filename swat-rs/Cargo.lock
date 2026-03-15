@@ -989,6 +989,7 @@ dependencies = [
  "swat-expr",
  "swat-session",
  "swat-store",
+ "swat-value",
 ]
 
 [[package]]

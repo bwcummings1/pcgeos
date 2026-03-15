@@ -41,9 +41,9 @@ def emit(record):
     sys.stdout.flush()
 
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
-emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-42", "name": "gpt-4.1-mini", "summary": "model requested"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-42", "name": "web_search", "summary": "tool started"})
-emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-42", "name": "web_search", "summary": "tool completed"})
+emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-42", "name": "gpt-4.1-mini", "summary": "model requested", "patient": {"name": "ui", "id": "patient-ui", "role": "application", "status": "running", "handles": [{"id": "h:1001", "kind": "resource", "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "kind": "ui", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource"}]}})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-42", "name": "web_search", "summary": "tool started", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "state": ["in", "fixed"]}})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-42", "name": "web_search", "summary": "tool completed", "resource": {"name": "AppResource", "patient": "ui", "handle": "h:1001"}})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-42", "name": "gpt-4.1-mini", "summary": "model responded"})
 emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
@@ -89,6 +89,24 @@ time.sleep(0.1)
     assert!(index.entities.iter().any(|entity| {
         entity.entity.kind == ResolvedEntityKind::StateKey && entity.entity.name == "memory.turn"
     }));
+    assert!(index.entities.iter().any(|entity| {
+        entity.entity.kind == ResolvedEntityKind::Patient
+            && entity.entity.name == "ui"
+            && entity.event_ids.len() >= 1
+    }));
+    assert!(index.entities.iter().any(|entity| {
+        entity.entity.kind == ResolvedEntityKind::Handle
+            && entity.entity.name == "h:1001"
+            && entity.event_ids.len() >= 2
+    }));
+    assert!(index.entities.iter().any(|entity| {
+        entity.entity.kind == ResolvedEntityKind::Resource
+            && entity.entity.name == "AppResource"
+    }));
+    assert!(index.entities.iter().any(|entity| {
+        entity.entity.kind == ResolvedEntityKind::Object
+            && entity.entity.name == "^lui:0002"
+    }));
     assert!(index.relations.iter().any(|relation| {
         let names = [
             (&relation.left.kind, relation.left.name.as_str()),
@@ -97,6 +115,14 @@ time.sleep(0.1)
         names.contains(&(&ResolvedEntityKind::CorrelationId, "req-42"))
             && names.contains(&(&ResolvedEntityKind::ToolName, "web_search"))
     }));
+    assert!(index.relations.iter().any(|relation| {
+        let names = [
+            (&relation.left.kind, relation.left.name.as_str()),
+            (&relation.right.kind, relation.right.name.as_str()),
+        ];
+        names.contains(&(&ResolvedEntityKind::Patient, "ui"))
+            && names.contains(&(&ResolvedEntityKind::Handle, "h:1001"))
+    }));
     assert!(index.correlation_groups.iter().any(|group| {
         group.correlation_id == "req-42"
             && group.span_ids.iter().any(|span| span == "model-1")
@@ -104,11 +130,16 @@ time.sleep(0.1)
             && group.entities.iter().any(|entity| {
                 entity.kind == ResolvedEntityKind::ModelName && entity.name == "gpt-4.1-mini"
             })
+            && group
+                .entities
+                .iter()
+                .any(|entity| entity.kind == ResolvedEntityKind::Patient && entity.name == "ui")
     }));
 
     let web_entities = resolver.find_entities(session_id, "web").unwrap();
     assert_eq!(web_entities.len(), 1);
     assert_eq!(web_entities[0].entity.kind, ResolvedEntityKind::ToolName);
+    assert_eq!(resolver.find_entities(session_id, "app").unwrap().len(), 1);
 
     let correlation_events = resolver.events_for_correlation(session_id, "req-42");
     assert_eq!(correlation_events.len(), 4);
@@ -138,6 +169,25 @@ time.sleep(0.1)
             .len(),
         2
     );
+    assert_eq!(resolver.events_for_patient(session_id, "ui").unwrap().len(), 3);
+    assert_eq!(
+        resolver.events_for_handle(session_id, "h:1001").unwrap().len(),
+        3
+    );
+    assert_eq!(
+        resolver
+            .events_for_resource(session_id, "AppResource")
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        resolver
+            .events_for_object(session_id, "^lui:0002")
+            .unwrap()
+            .len(),
+        1
+    );
 
     let model_request = resolver
         .events_by_kind(session_id, EventKind::ModelBoundary)
@@ -158,4 +208,7 @@ time.sleep(0.1)
             entity.kind == ResolvedEntityKind::SpanId && entity.name == "model-1"
         })
     );
+    assert!(event_entities.iter().any(|entity| {
+        entity.kind == ResolvedEntityKind::Patient && entity.name == "ui"
+    }));
 }

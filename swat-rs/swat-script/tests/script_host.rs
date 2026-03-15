@@ -136,7 +136,7 @@ def emit(record):
     sys.stdout.write(PREFIX + json.dumps(record) + "\n")
     sys.stdout.flush()
 
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}}})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}}, "patient": {"name": "ui", "handles": [{"id": "h:1001", "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource"}]}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
 time.sleep(0.1)
 "#;
@@ -179,6 +179,34 @@ time.sleep(0.1)
         host.eval_string("ctx.stack_frame_register_name(0, 0)")
             .unwrap(),
         "pc"
+    );
+    assert_eq!(host.eval_i64("ctx.patient_count()").unwrap(), 1);
+    assert_eq!(host.eval_string("ctx.patient_name(0)").unwrap(), "ui");
+    assert_eq!(host.eval_i64(r#"ctx.patient_handle_count("ui")"#).unwrap(), 1);
+    assert_eq!(host.eval_i64("ctx.handle_count()").unwrap(), 1);
+    assert_eq!(host.eval_string("ctx.handle_name(0)").unwrap(), "h:1001");
+    assert_eq!(
+        host.eval_i64(r#"ctx.handle_object_count("h:1001")"#).unwrap(),
+        1
+    );
+    assert_eq!(host.eval_i64("ctx.resource_count()").unwrap(), 1);
+    assert_eq!(
+        host.eval_string("ctx.resource_name(0)").unwrap(),
+        "AppResource"
+    );
+    assert_eq!(
+        host.eval_i64(r#"ctx.resource_object_count("AppResource")"#)
+            .unwrap(),
+        1
+    );
+    assert_eq!(host.eval_i64("ctx.object_count()").unwrap(), 1);
+    assert_eq!(
+        host.eval_string("ctx.object_identity(0)").unwrap(),
+        "^lui:0002"
+    );
+    assert_eq!(
+        host.eval_string(r#"ctx.object_class("^lui:0002")"#).unwrap(),
+        "GenApplication"
     );
 }
 

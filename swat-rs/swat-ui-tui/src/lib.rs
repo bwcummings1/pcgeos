@@ -19,7 +19,10 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_api::{LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec};
+use swat_api::{
+    HandleSummary, LiveSessionApi, ObjectSummary, PatientSummary, ResourceSummary, StackFrame,
+    TraceInspector, WatchpointSpec,
+};
 use swat_command::{
     BreakpointConditionInput, Command, CommandOutput, CommandSurface, command_completions,
     command_help, command_search, parse_command,
@@ -499,6 +502,43 @@ impl TuiApp {
                         .map(|entity| format!("  {:?} {}", entity.kind, entity.name)),
                 );
             }
+            let typed = inspector.event_typed_entities(event)?;
+            if !typed.patients.is_empty() {
+                lines.push("event patients:".to_string());
+                lines.extend(
+                    typed
+                        .patients
+                        .iter()
+                        .map(|patient| format!("  {}", format_tui_event_patient(patient))),
+                );
+            }
+            if !typed.handles.is_empty() {
+                lines.push("event handles:".to_string());
+                lines.extend(
+                    typed
+                        .handles
+                        .iter()
+                        .map(|handle| format!("  {}", format_tui_event_handle(handle))),
+                );
+            }
+            if !typed.resources.is_empty() {
+                lines.push("event resources:".to_string());
+                lines.extend(
+                    typed
+                        .resources
+                        .iter()
+                        .map(|resource| format!("  {}", format_tui_event_resource(resource))),
+                );
+            }
+            if !typed.objects.is_empty() {
+                lines.push("event objects:".to_string());
+                lines.extend(
+                    typed
+                        .objects
+                        .iter()
+                        .map(|object| format!("  {}", format_tui_event_object(object))),
+                );
+            }
         } else {
             lines.push("select an event to inspect entities".to_string());
         }
@@ -686,6 +726,118 @@ impl TuiApp {
                 self.selected_event = 0;
                 self.manual_source = None;
                 self.push_message(format!("event filter=correlation {correlation_id}"));
+            }
+            Command::Patients => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect patients".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let patients = self.runtime.inspector().patients(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} patient(s)", patients.len()),
+                    patients.iter().map(format_tui_patient_summary).collect(),
+                ));
+            }
+            Command::PatientShow { patient } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect patients".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .patient_detail(session_id, &patient)?
+                    .ok_or_else(|| SwatError::new(format!("unknown patient {patient}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("patient {}", detail.patient.name),
+                    format_tui_patient_detail(&detail),
+                ));
+            }
+            Command::Handles => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect handles".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let handles = self.runtime.inspector().handles(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} handle(s)", handles.len()),
+                    handles.iter().map(format_tui_handle_summary).collect(),
+                ));
+            }
+            Command::HandleShow { handle } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect handles".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .handle_detail(session_id, &handle)?
+                    .ok_or_else(|| SwatError::new(format!("unknown handle {handle}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("handle {}", detail.handle.key),
+                    format_tui_handle_detail(&detail),
+                ));
+            }
+            Command::Resources => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect resources".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let resources = self.runtime.inspector().resources(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} resource(s)", resources.len()),
+                    resources.iter().map(format_tui_resource_summary).collect(),
+                ));
+            }
+            Command::ResourceShow { resource } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect resources".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .resource_detail(session_id, &resource)?
+                    .ok_or_else(|| SwatError::new(format!("unknown resource {resource}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("resource {}", detail.resource.name),
+                    format_tui_resource_detail(&detail),
+                ));
+            }
+            Command::Objects => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect objects".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let objects = self.runtime.inspector().objects(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} object(s)", objects.len()),
+                    objects.iter().map(format_tui_object_summary).collect(),
+                ));
+            }
+            Command::ObjectShow { object } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect objects".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .object_detail(session_id, &object)?
+                    .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("object {}", detail.object.key),
+                    format_tui_object_detail(&detail),
+                ));
             }
             Command::Spans => {
                 for line in self.stack_lines()? {
@@ -1711,6 +1863,153 @@ fn format_tui_frame_register(register: &swat_api::FrameRegister) -> String {
     )
 }
 
+fn format_tui_patient_summary(patient: &PatientSummary) -> String {
+    format!(
+        "patient={} handles={} resources={} objects={} status={} runtime={}",
+        patient.name,
+        patient.handle_count,
+        patient.resource_count,
+        patient.object_count,
+        patient.status.as_deref().unwrap_or("-"),
+        patient.runtime.as_deref().unwrap_or("-")
+    )
+}
+
+fn format_tui_patient_detail(detail: &swat_api::PatientDetail) -> Vec<String> {
+    vec![
+        format!("patient={}", detail.patient.name),
+        format!("role={}", detail.patient.role.as_deref().unwrap_or("-")),
+        format!("status={}", detail.patient.status.as_deref().unwrap_or("-")),
+        format!("runtime={}", detail.patient.runtime.as_deref().unwrap_or("-")),
+        format!("path={}", detail.patient.path.as_deref().unwrap_or("-")),
+        format!("handles={}", join_tui_values(&detail.handles)),
+        format!("resources={}", join_tui_values(&detail.resources)),
+        format!("objects={}", join_tui_values(&detail.objects)),
+        format!("sources={}", join_tui_values(&detail.source_files)),
+    ]
+}
+
+fn format_tui_handle_summary(handle: &HandleSummary) -> String {
+    format!(
+        "handle={} patient={} resource={} state={} objects={}",
+        handle.key,
+        handle.patient.as_deref().unwrap_or("-"),
+        handle.resource.as_deref().unwrap_or("-"),
+        join_tui_values(&handle.state_flags),
+        handle.object_count
+    )
+}
+
+fn format_tui_handle_detail(detail: &swat_api::HandleDetail) -> Vec<String> {
+    vec![
+        format!("handle={}", detail.handle.key),
+        format!("patient={}", detail.handle.patient.as_deref().unwrap_or("-")),
+        format!("resource={}", detail.handle.resource.as_deref().unwrap_or("-")),
+        format!("kind={}", detail.handle.kind.as_deref().unwrap_or("-")),
+        format!("address={}", detail.handle.address.as_deref().unwrap_or("-")),
+        format!("size={}", detail.handle.size.map(|size| size.to_string()).unwrap_or_else(|| "-".to_string())),
+        format!("attached={}", detail.handle.attached.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string())),
+        format!("state={}", join_tui_values(&detail.handle.state_flags)),
+        format!("objects={}", join_tui_values(&detail.objects)),
+        format!("sources={}", join_tui_values(&detail.source_files)),
+    ]
+}
+
+fn format_tui_resource_summary(resource: &ResourceSummary) -> String {
+    format!(
+        "resource={} patient={} handle={} kind={} objects={}",
+        resource.name,
+        resource.patient.as_deref().unwrap_or("-"),
+        resource.handle.as_deref().unwrap_or("-"),
+        resource.kind.as_deref().unwrap_or("-"),
+        resource.object_count
+    )
+}
+
+fn format_tui_resource_detail(detail: &swat_api::ResourceDetail) -> Vec<String> {
+    vec![
+        format!("resource={}", detail.resource.name),
+        format!("patient={}", detail.resource.patient.as_deref().unwrap_or("-")),
+        format!("handle={}", detail.resource.handle.as_deref().unwrap_or("-")),
+        format!("kind={}", detail.resource.kind.as_deref().unwrap_or("-")),
+        format!("source_file={}", detail.resource.source_file.as_deref().unwrap_or("-")),
+        format!("objects={}", join_tui_values(&detail.objects)),
+        format!("sources={}", join_tui_values(&detail.source_files)),
+    ]
+}
+
+fn format_tui_object_summary(object: &ObjectSummary) -> String {
+    format!(
+        "object={} class={} patient={} handle={} resource={}",
+        object.key,
+        object.class_name.as_deref().unwrap_or("-"),
+        object.patient.as_deref().unwrap_or("-"),
+        object.handle.as_deref().unwrap_or("-"),
+        object.resource.as_deref().unwrap_or("-")
+    )
+}
+
+fn format_tui_object_detail(detail: &swat_api::ObjectDetail) -> Vec<String> {
+    vec![
+        format!("object={}", detail.object.key),
+        format!("class={}", detail.object.class_name.as_deref().unwrap_or("-")),
+        format!("patient={}", detail.object.patient.as_deref().unwrap_or("-")),
+        format!("handle={}", detail.object.handle.as_deref().unwrap_or("-")),
+        format!("resource={}", detail.object.resource.as_deref().unwrap_or("-")),
+        format!("address={}", detail.object.address.as_deref().unwrap_or("-")),
+        format!("state={}", join_tui_values(&detail.object.state_flags)),
+        format!("sources={}", join_tui_values(&detail.source_files)),
+    ]
+}
+
+fn format_tui_event_patient(patient: &swat_value::PatientArtifactRecord) -> String {
+    format!(
+        "patient={} handles={} resources={} objects={}",
+        patient.name,
+        patient.handle_ids.len(),
+        patient.resource_names.len(),
+        patient.object_ids.len()
+    )
+}
+
+fn format_tui_event_handle(handle: &swat_value::HandleArtifactRecord) -> String {
+    format!(
+        "handle={} patient={} resource={} state={}",
+        handle.key,
+        handle.patient.as_deref().unwrap_or("-"),
+        handle.resource.as_deref().unwrap_or("-"),
+        join_tui_values(&handle.state_flags)
+    )
+}
+
+fn format_tui_event_resource(resource: &swat_value::ResourceArtifactRecord) -> String {
+    format!(
+        "resource={} patient={} handle={} objects={}",
+        resource.name,
+        resource.patient.as_deref().unwrap_or("-"),
+        resource.handle.as_deref().unwrap_or("-"),
+        resource.object_ids.len()
+    )
+}
+
+fn format_tui_event_object(object: &swat_value::ObjectArtifactRecord) -> String {
+    format!(
+        "object={} class={} handle={} resource={}",
+        object.key,
+        object.class_name.as_deref().unwrap_or("-"),
+        object.handle.as_deref().unwrap_or("-"),
+        object.resource.as_deref().unwrap_or("-")
+    )
+}
+
+fn join_tui_values(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(",")
+    }
+}
+
 fn payload_summary(event: &EventEnvelope) -> String {
     match &event.payload {
         swat_core::EventPayload::Empty => "<empty>".to_string(),
@@ -1764,7 +2063,8 @@ fn buffer_to_string(buffer: &Buffer) -> String {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn tui_command_entry_uses_shared_help_and_stack_commands() {
@@ -1798,6 +2098,13 @@ mod tests {
             app.messages
                 .iter()
                 .any(|line| line.contains("stack frame 0 locals"))
+        );
+
+        app.execute_command("help patient").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("patient show <name>"))
         );
     }
 
@@ -1871,6 +2178,58 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("def beta")));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tui_command_entry_can_show_typed_patient_handle_and_object_views() {
+        let code = r#"
+import json
+import sys
+import time
+
+PREFIX = "__SWATAGENT__"
+
+def emit(record):
+    sys.stdout.write(PREFIX + json.dumps(record) + "\n")
+    sys.stdout.flush()
+
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-11", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "patient": {"name": "ui", "handles": [{"id": "h:1001", "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource"}]}})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-11", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "attached": True}})
+time.sleep(0.1)
+"#;
+
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::Agent {
+            program: "python3".to_string(),
+            args: vec!["-u".to_string(), "-c".to_string(), code.to_string()],
+        }))
+        .unwrap();
+        app.attach().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            app.on_tick().unwrap();
+            if app
+                .messages
+                .iter()
+                .any(|line| line.contains("agent runtime exited"))
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        app.execute_command("patient").unwrap();
+        assert!(app.messages.iter().any(|line| line.contains("patient=ui")));
+
+        app.execute_command("handle show h:1001").unwrap();
+        assert!(app.messages.iter().any(|line| line.contains("attached=true")));
+
+        app.execute_command("object show ^lui:0002").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("class=GenApplication"))
+        );
     }
 
     #[test]

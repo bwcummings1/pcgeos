@@ -87,6 +87,13 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("stack locals <index>"))
     );
+    let patient_help = command_help(Some("patient"), CommandSurface::Shell);
+    assert!(
+        patient_help
+            .lines
+            .iter()
+            .any(|line| line.contains("patient show <name>"))
+    );
     assert!(
         command_help(None, CommandSurface::Shell)
             .lines
@@ -161,6 +168,34 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             line: 4,
             before: 1,
             after: 2,
+        }
+    );
+    assert_eq!(parse_command("patient").unwrap(), Command::Patients);
+    assert_eq!(
+        parse_command("patient show ui").unwrap(),
+        Command::PatientShow {
+            patient: "ui".to_string(),
+        }
+    );
+    assert_eq!(parse_command("handles").unwrap(), Command::Handles);
+    assert_eq!(
+        parse_command("handle show h:1001").unwrap(),
+        Command::HandleShow {
+            handle: "h:1001".to_string(),
+        }
+    );
+    assert_eq!(parse_command("resources").unwrap(), Command::Resources);
+    assert_eq!(
+        parse_command("resource show AppResource").unwrap(),
+        Command::ResourceShow {
+            resource: "AppResource".to_string(),
+        }
+    );
+    assert_eq!(parse_command("objects").unwrap(), Command::Objects);
+    assert_eq!(
+        parse_command("object show ^lui:0002").unwrap(),
+        Command::ObjectShow {
+            object: "^lui:0002".to_string(),
         }
     );
     assert_eq!(
@@ -804,8 +839,8 @@ def emit(record):
 
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested", "file": "/tmp/agent.py", "line": 12, "function": "run"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}})
-emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}, "patient": {"name": "ui", "id": "patient-ui", "role": "application", "status": "running", "runtime": "pcgeos", "handles": [{"id": "h:1001", "kind": "resource", "state": ["in", "fixed"], "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "kind": "ui", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource", "address": "^lui:0002"}]}})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "attached": True, "size": 8192}})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 time.sleep(0.1)
 "#;
@@ -870,6 +905,48 @@ time.sleep(0.1)
     let locals = host.execute("stack locals 0").unwrap();
     assert!(locals.lines.iter().any(|line| line.contains("local=query")));
     assert!(locals.lines.iter().any(|line| line.contains("local=limit")));
+
+    let patients = host.execute("patient").unwrap();
+    assert_eq!(patients.lines.len(), 1);
+    assert!(patients.lines[0].contains("patient=ui"));
+    assert!(patients.lines[0].contains("resources=1"));
+
+    let patient = host.execute("patient show ui").unwrap();
+    assert!(patient.lines.iter().any(|line| line.contains("handles=h:1001")));
+    assert!(
+        patient
+            .lines
+            .iter()
+            .any(|line| line.contains("resources=AppResource"))
+    );
+
+    let handles = host.execute("handle").unwrap();
+    assert_eq!(handles.lines.len(), 1);
+    assert!(handles.lines[0].contains("handle=h:1001"));
+    assert!(handles.lines[0].contains("resource=AppResource"));
+
+    let handle = host.execute("handle show h:1001").unwrap();
+    assert!(handle.lines.iter().any(|line| line.contains("attached=true")));
+    assert!(handle.lines.iter().any(|line| line.contains("objects=^lui:0002")));
+
+    let resources = host.execute("resource").unwrap();
+    assert_eq!(resources.lines.len(), 1);
+    assert!(resources.lines[0].contains("resource=AppResource"));
+
+    let resource = host.execute("resource show AppResource").unwrap();
+    assert!(resource.lines.iter().any(|line| line.contains("handle=h:1001")));
+
+    let objects = host.execute("object").unwrap();
+    assert_eq!(objects.lines.len(), 1);
+    assert!(objects.lines[0].contains("object=^lui:0002"));
+
+    let object = host.execute("object show ^lui:0002").unwrap();
+    assert!(
+        object
+            .lines
+            .iter()
+            .any(|line| line.contains("class=GenApplication"))
+    );
 
     let registers = host.execute("stack registers 0").unwrap();
     assert!(
