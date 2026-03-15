@@ -5,8 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_command::{
-    Command, CommandHost, CommandSurface, command_completions, command_help, command_search,
-    parse_command,
+    BreakpointConditionInput, Command, CommandHost, CommandSurface, command_completions,
+    command_help, command_search, parse_command,
 };
 use swat_store::InMemoryStore;
 
@@ -163,6 +163,33 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         Command::BreakpointGroups
     );
     assert_eq!(
+        parse_command("breakpoint group list").unwrap(),
+        Command::BreakpointDefinitionGroups
+    );
+    assert_eq!(
+        parse_command("breakpoint predicates").unwrap(),
+        Command::BreakpointPredicates
+    );
+    assert_eq!(
+        parse_command(
+            r#"breakpoint predicate add search_tool kind == ModelBoundary and artifact.json $.tool == "search""#
+        )
+        .unwrap(),
+        Command::BreakpointPredicateAdd {
+            name: "search_tool".to_string(),
+            expr: r#"kind == ModelBoundary and artifact.json $.tool == "search""#.to_string(),
+        }
+    );
+    assert_eq!(
+        parse_command("breakpoint add pause_search group=search @search_tool").unwrap(),
+        Command::TriggerExpr {
+            name: "pause_search".to_string(),
+            condition: BreakpointConditionInput::PredicateRef("search_tool".to_string()),
+            fire_once: false,
+            group: Some("search".to_string()),
+        }
+    );
+    assert_eq!(
         parse_command("breakpoint disable 9").unwrap(),
         Command::TriggerDisable {
             trigger_id: swat_core::TriggerId::from_raw(9),
@@ -265,6 +292,67 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
 }
 
 #[test]
+fn command_host_can_manage_named_breakpoint_predicates_and_groups() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+    host.execute("resume").unwrap();
+
+    let predicate = host
+        .execute(
+            r#"breakpoint predicate add search_tool kind == ModelBoundary and artifact.json $.tool == "search""#,
+        )
+        .unwrap();
+    assert!(predicate.summary.contains("defined breakpoint predicate"));
+
+    let added = host
+        .execute("breakpoint add pause_search group=search @search_tool")
+        .unwrap();
+    assert!(added.summary.contains("added trigger"));
+
+    let predicates = host.execute("breakpoint predicates").unwrap();
+    assert!(
+        predicates
+            .lines
+            .iter()
+            .any(|line| line.contains("predicate=search_tool breakpoints=1"))
+    );
+
+    let groups = host.execute("breakpoint group list").unwrap();
+    assert!(
+        groups
+            .lines
+            .iter()
+            .any(|line| line.contains("definition_group=search enabled=true count=1"))
+    );
+
+    host.execute("pump").unwrap();
+    host.execute("breakpoint group disable search").unwrap();
+    let listed = host.execute("breakpoint list").unwrap();
+    let breakpoint_line = listed
+        .lines
+        .iter()
+        .find(|line| line.starts_with("bp="))
+        .unwrap();
+    assert!(breakpoint_line.contains("state=disabled"));
+    assert!(breakpoint_line.contains("configured=enabled"));
+    assert!(breakpoint_line.contains("group=search"));
+    assert!(breakpoint_line.contains("predicate=search_tool"));
+
+    host.execute("breakpoint group enable search").unwrap();
+    let triggered = host.execute("pump").unwrap();
+    assert!(
+        triggered
+            .lines
+            .iter()
+            .any(|line| line.contains("stop kind=breakpoint"))
+    );
+}
+
+#[test]
 fn command_host_can_toggle_trigger_enabled_state() {
     let mut host = CommandHost::new(
         Box::new(MockAdapter::default()),
@@ -356,7 +444,7 @@ fn command_host_can_save_and_restore_trigger_sets() {
     assert!(saved.summary.contains("saved 1 trigger"));
     let persisted = fs::read_to_string(&path).unwrap();
     assert!(persisted.contains("snapshot_search"));
-    assert!(persisted.contains(r#""format_version": 2"#));
+    assert!(persisted.contains(r#""format_version": 3"#));
     assert!(persisted.contains(r#""kind": "create_snapshot""#));
     assert!(persisted.contains(r#""enabled": false"#));
 

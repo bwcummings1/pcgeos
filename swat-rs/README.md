@@ -98,6 +98,9 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0023-command-until-and-trigger-actions.md`
 - `docs/adrs/0024-debugger-grade-inspection-models.md`
 - `docs/adrs/0025-terminal-ui-on-shared-debugger-apis.md`
+- `docs/adrs/0026-command-registry-and-debugger-families.md`
+- `docs/adrs/0027-supervised-continuation-runner.md`
+- `docs/adrs/0028-breakpoint-definition-groups-and-stop-reasons.md`
 
 ## Phase 1 status
 
@@ -155,7 +158,9 @@ The first semantic-control crate is now in the workspace:
 
 This crate evaluates trigger predicates over events and artifact content, emits
 `TriggerHit` records, and drives follow-up control actions back through the
-session manager.
+session manager. It now also supports reusable named predicates, user-defined
+breakpoint groups with shared enable policies, and first-class stop-reason
+objects for breakpoint and lifecycle-driven stops.
 
 The first typed value crate is also now in the workspace:
 
@@ -209,7 +214,9 @@ The first API crate is also now in the workspace:
 This crate exposes trace inspection primitives over sessions, events, decoded
 artifacts, semantic relations, source reports, snapshots, replay plans, and
 capability-gated live mutation so later human and agent clients can share the
-same substrate.
+same substrate. Its breakpoint inspection model now includes named predicate
+inventory, user-defined breakpoint groups, and effective-versus-configured
+state reporting for grouped breakpoint policies.
 
 The first resolver crate is also now in the workspace:
 

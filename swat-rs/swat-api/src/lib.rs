@@ -2,13 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use swat_control::{Trigger, TriggerEngine};
+use swat_control::{
+    Trigger, TriggerEngine, TriggerPredicate, TriggerPredicateDefinition, format_trigger_predicate,
+};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, PendingEvent,
     PolicyVerdict, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult, TargetAdapter,
     TriggerId,
 };
-use swat_expr::{QueryExpr, evaluate_expression, format_expression, parse_expression};
+use swat_expr::{QueryExpr, evaluate_expression, parse_expression};
 use swat_replay::ReplayPlan;
 use swat_resolver::{
     CorrelationGroup, EntityRef, EntityRelation, ResolvedEntity, TraceIndex, TraceResolver,
@@ -153,6 +155,10 @@ impl BreakpointGroupKind {
 pub struct BreakpointSummary {
     pub trigger_id: TriggerId,
     pub name: String,
+    pub group: Option<String>,
+    pub group_enabled: Option<bool>,
+    pub configured_state: BreakpointState,
+    pub predicate_name: Option<String>,
     pub predicate: String,
     pub actions: Vec<String>,
     pub state: BreakpointState,
@@ -175,6 +181,20 @@ pub struct BreakpointGroup {
     pub kind: BreakpointGroupKind,
     pub label: String,
     pub breakpoints: Vec<BreakpointSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointDefinitionGroup {
+    pub name: String,
+    pub enabled: bool,
+    pub breakpoints: Vec<BreakpointSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointPredicateSummary {
+    pub name: String,
+    pub predicate: String,
+    pub breakpoint_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -720,7 +740,7 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
         self.trigger_engine
             .triggers()
             .iter()
-            .map(build_breakpoint_summary)
+            .map(|trigger| build_breakpoint_summary(trigger, self.trigger_engine))
             .collect()
     }
 
@@ -730,7 +750,7 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
             .triggers()
             .iter()
             .find(|trigger| trigger.trigger_id == trigger_id)
-            .map(build_breakpoint_summary)?;
+            .map(|trigger| build_breakpoint_summary(trigger, self.trigger_engine))?;
         let last_hit_event = breakpoint
             .last_hit_event_id
             .and_then(|event_id| self.inspector().event_by_id(event_id));
@@ -798,6 +818,48 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
             ],
         ));
         groups
+    }
+
+    pub fn breakpoint_definition_groups(&self) -> Vec<BreakpointDefinitionGroup> {
+        let breakpoints = self.breakpoint_summaries();
+        self.trigger_engine
+            .group_policies()
+            .into_iter()
+            .filter_map(|policy| {
+                let grouped = breakpoints
+                    .iter()
+                    .filter(|breakpoint| breakpoint.group.as_deref() == Some(policy.name.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if grouped.is_empty() {
+                    None
+                } else {
+                    Some(BreakpointDefinitionGroup {
+                        name: policy.name,
+                        enabled: policy.enabled,
+                        breakpoints: grouped,
+                    })
+                }
+            })
+            .collect()
+    }
+
+    pub fn breakpoint_predicates(&self) -> Vec<BreakpointPredicateSummary> {
+        let breakpoints = self.breakpoint_summaries();
+        self.trigger_engine
+            .predicate_definitions()
+            .into_iter()
+            .map(|definition| BreakpointPredicateSummary {
+                breakpoint_count: breakpoints
+                    .iter()
+                    .filter(|breakpoint| {
+                        breakpoint.predicate_name.as_deref() == Some(definition.name.as_str())
+                    })
+                    .count(),
+                name: definition.name,
+                predicate: format_trigger_predicate(&definition.predicate),
+            })
+            .collect()
     }
 
     pub fn control(
@@ -895,6 +957,62 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
         })
     }
 
+    pub fn define_breakpoint_predicate(
+        &mut self,
+        session_id: SessionId,
+        name: impl Into<String>,
+        predicate: TriggerPredicate,
+    ) -> SwatResult<MutationReport<bool>> {
+        let name = name.into();
+        let replaced = self
+            .trigger_engine
+            .define_predicate(name.clone(), predicate.clone())
+            .is_some();
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed breakpoint predicate {} to be {}",
+                name,
+                if replaced { "updated" } else { "added" }
+            ),
+        )?;
+        Ok(MutationReport {
+            value: replaced,
+            policy_events,
+        })
+    }
+
+    pub fn remove_breakpoint_predicate(
+        &mut self,
+        session_id: SessionId,
+        name: &str,
+    ) -> SwatResult<MutationReport<TriggerPredicateDefinition>> {
+        let Some(predicate) = self.trigger_engine.remove_predicate(name) else {
+            let summary = format!(
+                "policy denied breakpoint predicate removal for unknown {}",
+                name
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(format!(
+                "unknown breakpoint predicate {}",
+                name
+            )));
+        };
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!("policy allowed breakpoint predicate removal {}", name),
+        )?;
+        Ok(MutationReport {
+            value: TriggerPredicateDefinition {
+                name: name.to_string(),
+                predicate,
+            },
+            policy_events,
+        })
+    }
+
     pub fn remove_trigger(
         &mut self,
         session_id: SessionId,
@@ -958,6 +1076,38 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
         })
     }
 
+    pub fn set_breakpoint_group_enabled(
+        &mut self,
+        session_id: SessionId,
+        group: &str,
+        enabled: bool,
+    ) -> SwatResult<MutationReport<bool>> {
+        let Some(previous) = self.trigger_engine.set_group_enabled(group, enabled) else {
+            let summary = format!(
+                "policy denied breakpoint group state change for unknown {}",
+                group
+            );
+            let _ = self.record_policy_event(session_id, PolicyVerdict::Deny, summary.clone());
+            return Err(SwatError::new(format!(
+                "unknown breakpoint group {}",
+                group
+            )));
+        };
+        let policy_events = self.record_policy_event(
+            session_id,
+            PolicyVerdict::Allow,
+            format!(
+                "policy allowed breakpoint group {} to be {}",
+                group,
+                if enabled { "enabled" } else { "disabled" }
+            ),
+        )?;
+        Ok(MutationReport {
+            value: previous,
+            policy_events,
+        })
+    }
+
     fn record_policy_event(
         &mut self,
         session_id: SessionId,
@@ -978,22 +1128,36 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
     }
 }
 
-fn build_breakpoint_summary(trigger: &Trigger) -> BreakpointSummary {
+fn build_breakpoint_summary(trigger: &Trigger, engine: &TriggerEngine) -> BreakpointSummary {
     let actions = trigger
         .actions
         .iter()
         .map(format_trigger_action)
         .collect::<Vec<_>>();
+    let group_enabled = trigger
+        .group
+        .as_deref()
+        .and_then(|group| engine.group_enabled(group));
+    let configured_state = if trigger.enabled {
+        BreakpointState::Enabled
+    } else {
+        BreakpointState::Disabled
+    };
+    let state = if trigger.enabled && group_enabled.unwrap_or(true) {
+        BreakpointState::Enabled
+    } else {
+        BreakpointState::Disabled
+    };
     BreakpointSummary {
         trigger_id: trigger.trigger_id,
         name: trigger.name.clone(),
+        group: trigger.group.clone(),
+        group_enabled,
+        configured_state,
+        predicate_name: breakpoint_predicate_name(&trigger.predicate),
         predicate: format_trigger_predicate(&trigger.predicate),
         actions,
-        state: if trigger.enabled {
-            BreakpointState::Enabled
-        } else {
-            BreakpointState::Disabled
-        },
+        state,
         lifetime: if trigger.fire_once {
             BreakpointLifetime::Once
         } else {
@@ -1038,46 +1202,10 @@ fn format_trigger_action(action: &swat_control::TriggerAction) -> String {
     }
 }
 
-fn format_trigger_predicate(predicate: &swat_control::TriggerPredicate) -> String {
+fn breakpoint_predicate_name(predicate: &swat_control::TriggerPredicate) -> Option<String> {
     match predicate {
-        swat_control::TriggerPredicate::Expr(expr) => format_expression(expr),
-        swat_control::TriggerPredicate::EventKindIs(kind) => {
-            format!("kind == {kind:?}")
-        }
-        swat_control::TriggerPredicate::SummaryContains(needle) => {
-            format!("summary contains {:?}", needle)
-        }
-        swat_control::TriggerPredicate::ArtifactUtf8Contains(needle) => {
-            format!("artifact.text contains {:?}", needle)
-        }
-        swat_control::TriggerPredicate::ArtifactJsonPathExists(path) => {
-            format!("artifact.json exists {path}")
-        }
-        swat_control::TriggerPredicate::ArtifactJsonPathEquals { path, expected } => {
-            format!("artifact.json {path} == {}", format_queried_value(expected))
-        }
-        swat_control::TriggerPredicate::ArtifactJsonFailsSchema(schema) => {
-            format!("artifact.json fails_schema {:?}", schema)
-        }
-        swat_control::TriggerPredicate::All(predicates) => predicates
-            .iter()
-            .map(format_trigger_predicate)
-            .collect::<Vec<_>>()
-            .join(" and "),
-        swat_control::TriggerPredicate::Any(predicates) => predicates
-            .iter()
-            .map(format_trigger_predicate)
-            .collect::<Vec<_>>()
-            .join(" or "),
-    }
-}
-
-fn format_queried_value(value: &QueriedValue) -> String {
-    match value {
-        QueriedValue::Null => "null".to_string(),
-        QueriedValue::Bool(value) => value.to_string(),
-        QueriedValue::Number(value) => value.clone(),
-        QueriedValue::String(value) | QueriedValue::Json(value) => format!("{value:?}"),
+        swat_control::TriggerPredicate::Named(name) => Some(name.clone()),
+        _ => None,
     }
 }
 

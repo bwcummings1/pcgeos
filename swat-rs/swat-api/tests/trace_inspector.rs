@@ -457,6 +457,67 @@ fn live_session_api_projects_debugger_oriented_breakpoint_views() {
 }
 
 #[test]
+fn live_session_api_projects_named_breakpoint_predicates_and_groups() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.define_breakpoint_predicate(
+            session_id,
+            "search_tool",
+            TriggerPredicate::Expr(
+                parse_expression(r#"kind == ModelBoundary and artifact.json $.tool == "search""#)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        api.add_trigger(
+            session_id,
+            Trigger::new(
+                "pause_search",
+                TriggerPredicate::Named("search_tool".to_string()),
+                vec![TriggerAction::PauseTarget],
+            )
+            .in_group("search"),
+        )
+        .unwrap();
+        api.set_breakpoint_group_enabled(session_id, "search", false)
+            .unwrap();
+    }
+
+    let api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+    let predicates = api.breakpoint_predicates();
+    assert_eq!(predicates.len(), 1);
+    assert_eq!(predicates[0].name, "search_tool");
+    assert_eq!(predicates[0].breakpoint_count, 1);
+    assert!(predicates[0].predicate.contains("kind == ModelBoundary"));
+
+    let groups = api.breakpoint_definition_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "search");
+    assert!(!groups[0].enabled);
+    assert_eq!(groups[0].breakpoints.len(), 1);
+
+    let breakpoints = api.breakpoint_summaries();
+    assert_eq!(breakpoints.len(), 1);
+    assert_eq!(breakpoints[0].group.as_deref(), Some("search"));
+    assert_eq!(breakpoints[0].group_enabled, Some(false));
+    assert_eq!(breakpoints[0].configured_state, BreakpointState::Enabled);
+    assert_eq!(breakpoints[0].state, BreakpointState::Disabled);
+    assert_eq!(
+        breakpoints[0].predicate_name.as_deref(),
+        Some("search_tool")
+    );
+    assert_eq!(breakpoints[0].predicate, "@search_tool");
+}
+
+#[test]
 fn live_session_api_denies_capability_blocked_snapshot_requests() {
     let spec =
         LocalProcessAdapter::new(LocalProcessSpec::new("/bin/sh").with_args(["-c", "sleep 0.2"]));

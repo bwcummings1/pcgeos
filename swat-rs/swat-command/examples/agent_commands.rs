@@ -51,8 +51,11 @@ time.sleep(0.1)
         "help breakpoint".to_string(),
         "help source".to_string(),
         "help search break".to_string(),
-        r#"breakpoint once pause_web kind == ToolBoundary and artifact.json $.name == "web_search""#
+        r#"breakpoint predicate add web_search kind == ToolBoundary and artifact.json $.name == "web_search""#
             .to_string(),
+        "breakpoint once pause_web group=search @web_search".to_string(),
+        "breakpoint predicates".to_string(),
+        "breakpoint group list".to_string(),
         format!("breakpoint save {trigger_path}"),
         format!("breakpoint load {trigger_path}"),
         "breakpoint list".to_string(),

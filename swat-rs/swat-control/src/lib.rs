@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use swat_core::{
     AdapterEmission, ControlAction, ControlResponse, EventEnvelope, EventId, EventKind,
     EventPayload, PendingEvent, SwatResult, TargetAdapter, TriggerId,
 };
-use swat_expr::{QueryExpr, evaluate_expression};
+use swat_expr::{QueryExpr, evaluate_expression, format_expression};
 use swat_schema::{SchemaNode, validate_decoded_value};
 use swat_session::{ControlReport, PumpReport, SessionManager};
 use swat_store::SwatStore;
@@ -15,6 +15,7 @@ use swat_value::{QueriedValue, decode_artifact};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriggerPredicate {
     Expr(QueryExpr),
+    Named(String),
     EventKindIs(EventKind),
     SummaryContains(String),
     ArtifactUtf8Contains(String),
@@ -29,6 +30,12 @@ pub enum TriggerPredicate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TriggerPredicateDefinition {
+    pub name: String,
+    pub predicate: TriggerPredicate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TriggerAction {
     PauseTarget,
     CreateSnapshot { reason: String },
@@ -38,6 +45,7 @@ pub enum TriggerAction {
 pub struct Trigger {
     pub trigger_id: TriggerId,
     pub name: String,
+    pub group: Option<String>,
     pub predicate: TriggerPredicate,
     pub actions: Vec<TriggerAction>,
     pub fire_once: bool,
@@ -56,6 +64,7 @@ impl Trigger {
         Self {
             trigger_id: TriggerId::new(),
             name: name.into(),
+            group: None,
             predicate,
             actions,
             fire_once: false,
@@ -64,6 +73,11 @@ impl Trigger {
             last_hit_event_id: None,
             last_hit_sequence_no: None,
         }
+    }
+
+    pub fn in_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
     }
 
     pub fn fire_once(mut self) -> Self {
@@ -78,12 +92,40 @@ impl Trigger {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TriggerGroupPolicy {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TriggerMatch {
     pub trigger_id: TriggerId,
     pub trigger_name: String,
-    pub event_id: swat_core::EventId,
+    pub group: Option<String>,
+    pub predicate_name: Option<String>,
+    pub event_id: EventId,
+    pub sequence_no: u64,
     pub summary: String,
     pub actions: Vec<TriggerAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReasonKind {
+    Breakpoint,
+    TargetExit,
+    ControlRejected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopReason {
+    pub kind: StopReasonKind,
+    pub summary: String,
+    pub trigger_id: Option<TriggerId>,
+    pub trigger_name: Option<String>,
+    pub group: Option<String>,
+    pub event_id: Option<EventId>,
+    pub sequence_no: Option<u64>,
+    pub control_action: Option<ControlAction>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,12 +134,15 @@ pub struct ControlledPumpReport {
     pub trigger_events: Vec<EventEnvelope>,
     pub trigger_matches: Vec<TriggerMatch>,
     pub control_reports: Vec<ControlReport>,
+    pub stop_reasons: Vec<StopReason>,
 }
 
 #[derive(Default)]
 pub struct TriggerEngine {
     triggers: Vec<Trigger>,
     fired_once: BTreeSet<TriggerId>,
+    predicate_library: BTreeMap<String, TriggerPredicate>,
+    group_policies: BTreeMap<String, bool>,
 }
 
 impl TriggerEngine {
@@ -106,11 +151,14 @@ impl TriggerEngine {
     }
 
     pub fn with_trigger(mut self, trigger: Trigger) -> Self {
-        self.triggers.push(trigger);
+        self.add_trigger(trigger);
         self
     }
 
     pub fn add_trigger(&mut self, trigger: Trigger) {
+        if let Some(group) = trigger.group.as_ref() {
+            self.group_policies.entry(group.clone()).or_insert(true);
+        }
         self.triggers.push(trigger);
     }
 
@@ -120,11 +168,68 @@ impl TriggerEngine {
             .iter()
             .position(|trigger| trigger.trigger_id == trigger_id)?;
         self.fired_once.remove(&trigger_id);
-        Some(self.triggers.remove(index))
+        let trigger = self.triggers.remove(index);
+        if let Some(group) = trigger.group.as_deref() {
+            if !self
+                .triggers
+                .iter()
+                .any(|other| other.group.as_deref() == Some(group))
+            {
+                self.group_policies.remove(group);
+            }
+        }
+        Some(trigger)
     }
 
     pub fn triggers(&self) -> &[Trigger] {
         &self.triggers
+    }
+
+    pub fn predicate(&self, name: &str) -> Option<&TriggerPredicate> {
+        self.predicate_library.get(name)
+    }
+
+    pub fn predicate_definitions(&self) -> Vec<TriggerPredicateDefinition> {
+        self.predicate_library
+            .iter()
+            .map(|(name, predicate)| TriggerPredicateDefinition {
+                name: name.clone(),
+                predicate: predicate.clone(),
+            })
+            .collect()
+    }
+
+    pub fn define_predicate(
+        &mut self,
+        name: impl Into<String>,
+        predicate: TriggerPredicate,
+    ) -> Option<TriggerPredicate> {
+        self.predicate_library.insert(name.into(), predicate)
+    }
+
+    pub fn remove_predicate(&mut self, name: &str) -> Option<TriggerPredicate> {
+        self.predicate_library.remove(name)
+    }
+
+    pub fn group_enabled(&self, group: &str) -> Option<bool> {
+        self.group_policies.get(group).copied()
+    }
+
+    pub fn group_policies(&self) -> Vec<TriggerGroupPolicy> {
+        self.group_policies
+            .iter()
+            .map(|(name, enabled)| TriggerGroupPolicy {
+                name: name.clone(),
+                enabled: *enabled,
+            })
+            .collect()
+    }
+
+    pub fn set_group_enabled(&mut self, group: &str, enabled: bool) -> Option<bool> {
+        let policy = self.group_policies.get_mut(group)?;
+        let previous = *policy;
+        *policy = enabled;
+        Some(previous)
     }
 
     pub fn set_enabled(&mut self, trigger_id: TriggerId, enabled: bool) -> Option<bool> {
@@ -148,10 +253,21 @@ impl TriggerEngine {
             if !trigger.enabled {
                 continue;
             }
+            if let Some(group) = trigger.group.as_deref() {
+                if !self.group_policies.get(group).copied().unwrap_or(true) {
+                    continue;
+                }
+            }
             if trigger.fire_once && self.fired_once.contains(&trigger.trigger_id) {
                 continue;
             }
-            if !predicate_matches(&trigger.predicate, event, store) {
+            if !predicate_matches(
+                &trigger.predicate,
+                event,
+                store,
+                &self.predicate_library,
+                &mut BTreeSet::new(),
+            ) {
                 continue;
             }
 
@@ -163,7 +279,10 @@ impl TriggerEngine {
             matches.push(TriggerMatch {
                 trigger_id: trigger.trigger_id,
                 trigger_name: trigger.name.clone(),
+                group: trigger.group.clone(),
+                predicate_name: top_level_predicate_name(&trigger.predicate),
                 event_id: event.event_id,
+                sequence_no: event.sequence_no,
                 summary,
                 actions: trigger.actions.clone(),
             });
@@ -229,21 +348,121 @@ pub fn pump_with_triggers<A: TargetAdapter + ?Sized, S: SwatStore + ?Sized>(
         }
     }
 
+    let stop_reasons = collect_stop_reasons(&pump_report, &trigger_matches, &control_reports);
+
     Ok(ControlledPumpReport {
         pump_report,
         trigger_events,
         trigger_matches,
         control_reports,
+        stop_reasons,
     })
+}
+
+pub fn format_trigger_predicate(predicate: &TriggerPredicate) -> String {
+    match predicate {
+        TriggerPredicate::Expr(expr) => format_expression(expr),
+        TriggerPredicate::Named(name) => format!("@{name}"),
+        TriggerPredicate::EventKindIs(kind) => format!("kind == {kind:?}"),
+        TriggerPredicate::SummaryContains(needle) => format!("summary contains {needle:?}"),
+        TriggerPredicate::ArtifactUtf8Contains(needle) => {
+            format!("artifact.text contains {needle:?}")
+        }
+        TriggerPredicate::ArtifactJsonPathExists(path) => {
+            format!("artifact.json {path} exists")
+        }
+        TriggerPredicate::ArtifactJsonPathEquals { path, expected } => {
+            format!("artifact.json {path} == {}", format_queried_value(expected))
+        }
+        TriggerPredicate::ArtifactJsonFailsSchema(_) => "artifact.json fails <schema>".to_string(),
+        TriggerPredicate::All(predicates) => format_joined_predicates(predicates, "and"),
+        TriggerPredicate::Any(predicates) => format_joined_predicates(predicates, "or"),
+    }
+}
+
+fn collect_stop_reasons(
+    pump_report: &PumpReport,
+    trigger_matches: &[TriggerMatch],
+    control_reports: &[ControlReport],
+) -> Vec<StopReason> {
+    let mut stop_reasons = Vec::new();
+
+    for trigger_match in trigger_matches {
+        if trigger_match
+            .actions
+            .iter()
+            .any(|action| matches!(action, TriggerAction::PauseTarget))
+        {
+            stop_reasons.push(StopReason {
+                kind: StopReasonKind::Breakpoint,
+                summary: trigger_match.summary.clone(),
+                trigger_id: Some(trigger_match.trigger_id),
+                trigger_name: Some(trigger_match.trigger_name.clone()),
+                group: trigger_match.group.clone(),
+                event_id: Some(trigger_match.event_id),
+                sequence_no: Some(trigger_match.sequence_no),
+                control_action: Some(ControlAction::Pause),
+            });
+        }
+    }
+
+    for control_report in control_reports {
+        if control_report.response.accepted {
+            continue;
+        }
+        stop_reasons.push(StopReason {
+            kind: StopReasonKind::ControlRejected,
+            summary: control_report.response.summary.clone(),
+            trigger_id: None,
+            trigger_name: None,
+            group: None,
+            event_id: None,
+            sequence_no: None,
+            control_action: control_action_from_report(control_report),
+        });
+    }
+
+    for event in &pump_report.stored_events {
+        let Some(summary) = target_exit_summary(event) else {
+            continue;
+        };
+        stop_reasons.push(StopReason {
+            kind: StopReasonKind::TargetExit,
+            summary: summary.to_string(),
+            trigger_id: None,
+            trigger_name: None,
+            group: None,
+            event_id: Some(event.event_id),
+            sequence_no: Some(event.sequence_no),
+            control_action: None,
+        });
+    }
+
+    stop_reasons
 }
 
 fn predicate_matches<S: SwatStore + ?Sized>(
     predicate: &TriggerPredicate,
     event: &EventEnvelope,
     store: &S,
+    predicate_library: &BTreeMap<String, TriggerPredicate>,
+    visiting: &mut BTreeSet<String>,
 ) -> bool {
     match predicate {
         TriggerPredicate::Expr(expr) => evaluate_expression(store, event, expr),
+        TriggerPredicate::Named(name) => {
+            if !visiting.insert(name.clone()) {
+                return false;
+            }
+            let matched = predicate_library
+                .get(name)
+                .map(|predicate| {
+                    predicate_matches(predicate, event, store, predicate_library, visiting)
+                })
+                .unwrap_or(false);
+            visiting.remove(name);
+            matched
+        }
         TriggerPredicate::EventKindIs(kind) => event.kind == *kind,
         TriggerPredicate::SummaryContains(needle) => payload_summary(event)
             .map(|summary| summary.contains(needle))
@@ -288,12 +507,40 @@ fn predicate_matches<S: SwatStore + ?Sized>(
                     .unwrap_or(false)
             })
         }
-        TriggerPredicate::All(predicates) => predicates
-            .iter()
-            .all(|predicate| predicate_matches(predicate, event, store)),
-        TriggerPredicate::Any(predicates) => predicates
-            .iter()
-            .any(|predicate| predicate_matches(predicate, event, store)),
+        TriggerPredicate::All(predicates) => predicates.iter().all(|predicate| {
+            predicate_matches(predicate, event, store, predicate_library, visiting)
+        }),
+        TriggerPredicate::Any(predicates) => predicates.iter().any(|predicate| {
+            predicate_matches(predicate, event, store, predicate_library, visiting)
+        }),
+    }
+}
+
+fn control_action_from_report(report: &ControlReport) -> Option<ControlAction> {
+    report
+        .stored_events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Control { action, .. } => Some(action.clone()),
+            _ => None,
+        })
+}
+
+fn format_joined_predicates(predicates: &[TriggerPredicate], operator: &str) -> String {
+    predicates
+        .iter()
+        .map(|predicate| format!("({})", format_trigger_predicate(predicate)))
+        .collect::<Vec<_>>()
+        .join(&format!(" {operator} "))
+}
+
+fn format_queried_value(value: &QueriedValue) -> String {
+    match value {
+        QueriedValue::Null => "null".to_string(),
+        QueriedValue::Bool(value) => value.to_string(),
+        QueriedValue::Number(value) => value.clone(),
+        QueriedValue::String(value) => format!("{value:?}"),
+        QueriedValue::Json(value) => value.clone(),
     }
 }
 
@@ -307,6 +554,24 @@ fn payload_summary(event: &EventEnvelope) -> Option<&str> {
         | EventPayload::Trigger { summary, .. }
         | EventPayload::Value { summary, .. }
         | EventPayload::Policy { summary, .. } => Some(summary.as_str()),
+    }
+}
+
+fn target_exit_summary(event: &EventEnvelope) -> Option<&str> {
+    match &event.payload {
+        EventPayload::Text { summary }
+            if event.kind == EventKind::Lifecycle && summary.contains("exited") =>
+        {
+            Some(summary.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn top_level_predicate_name(predicate: &TriggerPredicate) -> Option<String> {
+    match predicate {
+        TriggerPredicate::Named(name) => Some(name.clone()),
+        _ => None,
     }
 }
 

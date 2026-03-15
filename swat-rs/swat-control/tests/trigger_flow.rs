@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_control::{
-    Trigger, TriggerAction, TriggerEngine, TriggerPredicate, last_control_response,
+    StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerPredicate, last_control_response,
     pump_with_triggers,
 };
 use swat_core::{ControlAction, EventKind, EventPayload};
@@ -253,6 +253,150 @@ fn disabled_trigger_can_be_reenabled_before_matching_again() {
         trigger.last_hit_sequence_no,
         Some(boundary_event.sequence_no)
     );
+}
+
+#[test]
+fn named_predicates_and_group_policies_gate_breakpoint_matches() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new();
+    engine.define_predicate(
+        "search_tool",
+        TriggerPredicate::ArtifactJsonPathEquals {
+            path: "$.tool".to_string(),
+            expected: QueriedValue::String("search".to_string()),
+        },
+    );
+    let trigger = Trigger::new(
+        "pause-on-tool-search",
+        TriggerPredicate::Named("search_tool".to_string()),
+        vec![TriggerAction::PauseTarget],
+    )
+    .in_group("search");
+    let trigger_id = trigger.trigger_id;
+    engine.add_trigger(trigger);
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    manager
+        .control(session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .unwrap();
+
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+
+    assert_eq!(engine.set_group_enabled("search", false), Some(true));
+    let second = pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    assert!(second.trigger_matches.is_empty());
+
+    let boundary_event = store
+        .events_for_session(session_id)
+        .into_iter()
+        .find(|event| event.kind == EventKind::ModelBoundary)
+        .unwrap();
+    assert_eq!(engine.set_group_enabled("search", true), Some(false));
+    let matches = engine.evaluate_event(&boundary_event, &store);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].trigger_id, trigger_id);
+    assert_eq!(matches[0].group.as_deref(), Some("search"));
+    assert_eq!(matches[0].predicate_name.as_deref(), Some("search_tool"));
+}
+
+#[test]
+fn controlled_pump_reports_breakpoint_stop_reasons() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new().with_trigger(
+        Trigger::new(
+            "pause-on-tool-search",
+            TriggerPredicate::ArtifactJsonPathEquals {
+                path: "$.tool".to_string(),
+                expected: QueriedValue::String("search".to_string()),
+            },
+            vec![TriggerAction::PauseTarget],
+        )
+        .fire_once(),
+    );
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    manager
+        .control(session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .unwrap();
+
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    let second = pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+
+    assert!(
+        second
+            .stop_reasons
+            .iter()
+            .any(|reason| reason.kind == StopReasonKind::Breakpoint
+                && reason.trigger_name.as_deref() == Some("pause-on-tool-search"))
+    );
+}
+
+#[test]
+fn controlled_pump_reports_target_exit_stop_reasons() {
+    let spec = LocalProcessSpec::new("/bin/sh").with_args(["-c", "exit 0"]);
+    let mut adapter = LocalProcessAdapter::new(spec);
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        let report = pump_with_triggers(
+            &mut manager,
+            session_id,
+            &mut adapter,
+            &mut store,
+            &mut engine,
+        )
+        .unwrap();
+        if report
+            .stop_reasons
+            .iter()
+            .any(|reason| reason.kind == StopReasonKind::TargetExit)
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    panic!("local process did not surface a target-exit stop reason");
 }
 
 #[test]

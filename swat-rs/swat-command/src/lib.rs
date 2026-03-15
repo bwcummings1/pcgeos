@@ -9,9 +9,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use swat_api::{
-    BreakpointGroupKind, BreakpointSummary, LiveSessionApi, StackFrame, TraceInspector,
+    BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
+    LiveSessionApi, StackFrame, TraceInspector,
 };
-use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerMatch, pump_with_triggers};
+use swat_control::{
+    StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
+    TriggerPredicate, format_trigger_predicate, pump_with_triggers,
+};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, SessionId,
     SnapshotId, SwatError, SwatResult, TargetAdapter, TriggerId,
@@ -22,6 +26,28 @@ use swat_session::SessionManager;
 use swat_store::SwatStore;
 
 pub use registry::{CommandSurface, command_completions, command_help, command_search};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BreakpointConditionInput {
+    Expression(String),
+    PredicateRef(String),
+}
+
+impl BreakpointConditionInput {
+    fn as_expression(&self) -> Option<&str> {
+        match self {
+            Self::Expression(expr) => Some(expr.as_str()),
+            Self::PredicateRef(_) => None,
+        }
+    }
+
+    fn predicate_ref(&self) -> Option<&str> {
+        match self {
+            Self::Expression(_) => None,
+            Self::PredicateRef(name) => Some(name.as_str()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -71,16 +97,33 @@ pub enum Command {
         trigger_id: TriggerId,
     },
     BreakpointGroups,
+    BreakpointDefinitionGroups,
+    BreakpointPredicates,
+    BreakpointPredicateAdd {
+        name: String,
+        expr: String,
+    },
+    BreakpointPredicateRemove {
+        name: String,
+    },
+    BreakpointGroupEnable {
+        group: String,
+    },
+    BreakpointGroupDisable {
+        group: String,
+    },
     Triggers,
     TriggerExpr {
         name: String,
-        expr: String,
+        condition: BreakpointConditionInput,
         fire_once: bool,
+        group: Option<String>,
     },
     TriggerSnapshot {
         name: String,
-        expr: String,
+        condition: BreakpointConditionInput,
         reason: String,
+        group: Option<String>,
     },
     TriggerEnable {
         trigger_id: TriggerId,
@@ -151,6 +194,7 @@ pub struct CommandHost {
     store: Box<dyn SwatStore>,
     trigger_engine: TriggerEngine,
     trigger_specs: BTreeMap<TriggerId, PersistedTriggerSpec>,
+    predicate_specs: BTreeMap<String, PersistedPredicateSpec>,
     session_id: Option<SessionId>,
 }
 
@@ -162,6 +206,7 @@ impl CommandHost {
             store,
             trigger_engine: TriggerEngine::new(),
             trigger_specs: BTreeMap::new(),
+            predicate_specs: BTreeMap::new(),
             session_id: None,
         }
     }
@@ -197,15 +242,31 @@ impl CommandHost {
             Command::Breakpoints => self.list_breakpoints(),
             Command::BreakpointShow { trigger_id } => self.show_breakpoint(trigger_id),
             Command::BreakpointGroups => self.list_breakpoint_groups(),
+            Command::BreakpointDefinitionGroups => self.list_breakpoint_definition_groups(),
+            Command::BreakpointPredicates => self.list_breakpoint_predicates(),
+            Command::BreakpointPredicateAdd { name, expr } => {
+                self.add_breakpoint_predicate(&name, &expr)
+            }
+            Command::BreakpointPredicateRemove { name } => self.remove_breakpoint_predicate(&name),
+            Command::BreakpointGroupEnable { group } => {
+                self.set_breakpoint_group_enabled(&group, true)
+            }
+            Command::BreakpointGroupDisable { group } => {
+                self.set_breakpoint_group_enabled(&group, false)
+            }
             Command::Triggers => Ok(self.list_triggers()),
             Command::TriggerExpr {
                 name,
-                expr,
+                condition,
                 fire_once,
-            } => self.add_trigger(&name, &expr, fire_once),
-            Command::TriggerSnapshot { name, expr, reason } => {
-                self.add_snapshot_trigger(&name, &expr, &reason)
-            }
+                group,
+            } => self.add_trigger(&name, condition, fire_once, group.as_deref()),
+            Command::TriggerSnapshot {
+                name,
+                condition,
+                reason,
+                group,
+            } => self.add_snapshot_trigger(&name, condition, &reason, group.as_deref()),
             Command::TriggerEnable { trigger_id } => self.set_trigger_enabled(trigger_id, true),
             Command::TriggerDisable { trigger_id } => self.set_trigger_enabled(trigger_id, false),
             Command::TriggerSave { path } => self.save_triggers(&path),
@@ -600,18 +661,33 @@ impl CommandHost {
                 .triggers()
                 .iter()
                 .map(|trigger| {
-                    let (expr, actions) = self
+                    let (condition, group, actions) = self
                         .trigger_specs
                         .get(&trigger.trigger_id)
                         .map(|spec| {
                             (
-                                format!(" expr={:?}", spec.expr),
+                                format!(
+                                    " condition={}",
+                                    format_persisted_trigger_condition(spec)
+                                ),
+                                spec.group
+                                    .as_ref()
+                                    .map(|group| format!(" group={group}"))
+                                    .unwrap_or_default(),
                                 format_persisted_trigger_actions(&spec.actions),
                             )
                         })
                         .unwrap_or_else(|| {
                             (
-                                String::new(),
+                                format!(
+                                    " condition={}",
+                                    format_trigger_predicate(&trigger.predicate)
+                                ),
+                                trigger
+                                    .group
+                                    .as_ref()
+                                    .map(|group| format!(" group={group}"))
+                                    .unwrap_or_default(),
                                 format_persisted_trigger_actions(
                                     &trigger
                                         .actions
@@ -622,7 +698,7 @@ impl CommandHost {
                             )
                         });
                     format!(
-                        "trigger={} name={} fire_once={} enabled={} hits={} last_event={} last_seq={} actions={}{}",
+                        "trigger={} name={} fire_once={} enabled={} hits={} last_event={} last_seq={} actions={}{}{}",
                         trigger.trigger_id.raw(),
                         trigger.name,
                         trigger.fire_once,
@@ -637,7 +713,8 @@ impl CommandHost {
                             .map(|sequence_no| sequence_no.to_string())
                             .unwrap_or_else(|| "-".to_string()),
                         actions,
-                        expr
+                        group,
+                        condition
                     )
                 })
                 .collect(),
@@ -698,14 +775,27 @@ impl CommandHost {
                 breakpoint.name
             ),
             format!(
-                "state={} lifetime={} disposition={} activity={}",
+                "state={} configured={} lifetime={} disposition={} activity={}",
                 breakpoint.state.label(),
+                breakpoint.configured_state.label(),
                 breakpoint.lifetime.label(),
                 breakpoint.disposition.label(),
                 breakpoint.activity.label()
             ),
+            format!(
+                "group={} group_enabled={}",
+                breakpoint.group.as_deref().unwrap_or("-"),
+                breakpoint
+                    .group_enabled
+                    .map(|enabled| enabled.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "predicate_name={}",
+                breakpoint.predicate_name.as_deref().unwrap_or("-")
+            ),
             format!("actions={}", breakpoint.actions.join(",")),
-            format!("when={:?}", breakpoint.predicate),
+            format!("when={}", breakpoint.predicate),
             format!("hits={}", breakpoint.hit_count),
             format!(
                 "last_event={}",
@@ -763,17 +853,143 @@ impl CommandHost {
         ))
     }
 
+    fn list_breakpoint_definition_groups(&mut self) -> SwatResult<CommandOutput> {
+        let groups = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.breakpoint_definition_groups()
+        };
+        let mut lines = Vec::new();
+        for group in &groups {
+            lines.push(format_breakpoint_definition_group(group));
+            lines.extend(group.breakpoints.iter().map(format_breakpoint_summary));
+        }
+        Ok(CommandOutput::new(
+            format!("{} definition group(s)", groups.len()),
+            lines,
+        ))
+    }
+
+    fn list_breakpoint_predicates(&mut self) -> SwatResult<CommandOutput> {
+        let predicates = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.breakpoint_predicates()
+        };
+        Ok(CommandOutput::new(
+            format!("{} breakpoint predicate(s)", predicates.len()),
+            predicates
+                .iter()
+                .map(format_breakpoint_predicate_summary)
+                .collect(),
+        ))
+    }
+
+    fn add_breakpoint_predicate(&mut self, name: &str, expr: &str) -> SwatResult<CommandOutput> {
+        let predicate = TriggerPredicate::Expr(parse_expression(expr)?);
+        let policy_lines = if let Some(session_id) = self.session_id {
+            let report = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.define_breakpoint_predicate(session_id, name, predicate.clone())?
+            };
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .collect::<Vec<_>>()
+        } else {
+            self.trigger_engine
+                .define_predicate(name.to_string(), predicate.clone());
+            Vec::new()
+        };
+        self.predicate_specs.insert(
+            name.to_string(),
+            PersistedPredicateSpec {
+                name: name.to_string(),
+                expr: expr.to_string(),
+            },
+        );
+        Ok(CommandOutput::new(
+            format!("defined breakpoint predicate {name}"),
+            policy_lines
+                .into_iter()
+                .chain(std::iter::once(format!(
+                    "predicate={} expr={:?}",
+                    name, expr
+                )))
+                .collect(),
+        ))
+    }
+
+    fn remove_breakpoint_predicate(&mut self, name: &str) -> SwatResult<CommandOutput> {
+        if self
+            .trigger_specs
+            .values()
+            .any(|spec| spec.predicate_ref.as_deref() == Some(name))
+        {
+            return Err(SwatError::new(format!(
+                "cannot remove breakpoint predicate {} while breakpoints still reference it",
+                name
+            )));
+        }
+        let policy_lines = if let Some(session_id) = self.session_id {
+            let report = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.remove_breakpoint_predicate(session_id, name)?
+            };
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .collect::<Vec<_>>()
+        } else {
+            self.trigger_engine
+                .remove_predicate(name)
+                .ok_or_else(|| SwatError::new(format!("unknown breakpoint predicate {name}")))?;
+            Vec::new()
+        };
+        self.predicate_specs.remove(name);
+        Ok(CommandOutput::new(
+            format!("removed breakpoint predicate {name}"),
+            policy_lines
+                .into_iter()
+                .chain(std::iter::once(format!("predicate={name}")))
+                .collect(),
+        ))
+    }
+
     fn add_trigger(
         &mut self,
         name: &str,
-        expr: &str,
+        condition: BreakpointConditionInput,
         fire_once: bool,
+        group: Option<&str>,
     ) -> SwatResult<CommandOutput> {
         self.add_trigger_spec(PersistedTriggerSpec {
             name: name.to_string(),
-            expr: expr.to_string(),
+            expr: condition.as_expression().map(ToString::to_string),
+            predicate_ref: condition.predicate_ref().map(ToString::to_string),
             fire_once,
             enabled: true,
+            group: group.map(ToString::to_string),
             actions: default_persisted_trigger_actions(),
         })
     }
@@ -781,18 +997,67 @@ impl CommandHost {
     fn add_snapshot_trigger(
         &mut self,
         name: &str,
-        expr: &str,
+        condition: BreakpointConditionInput,
         reason: &str,
+        group: Option<&str>,
     ) -> SwatResult<CommandOutput> {
         self.add_trigger_spec(PersistedTriggerSpec {
             name: name.to_string(),
-            expr: expr.to_string(),
+            expr: condition.as_expression().map(ToString::to_string),
+            predicate_ref: condition.predicate_ref().map(ToString::to_string),
             fire_once: false,
             enabled: true,
+            group: group.map(ToString::to_string),
             actions: vec![PersistedTriggerAction::CreateSnapshot {
                 reason: reason.to_string(),
             }],
         })
+    }
+
+    fn set_breakpoint_group_enabled(
+        &mut self,
+        group: &str,
+        enabled: bool,
+    ) -> SwatResult<CommandOutput> {
+        let (previous, policy_lines) = if let Some(session_id) = self.session_id {
+            let report = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.set_breakpoint_group_enabled(session_id, group, enabled)?
+            };
+            (
+                report.value,
+                report
+                    .policy_events
+                    .iter()
+                    .map(format_event_line)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            let previous = self
+                .trigger_engine
+                .set_group_enabled(group, enabled)
+                .ok_or_else(|| SwatError::new(format!("unknown breakpoint group {group}")))?;
+            (previous, Vec::new())
+        };
+        Ok(CommandOutput::new(
+            format!(
+                "{} breakpoint group {}",
+                if enabled { "enabled" } else { "disabled" },
+                group
+            ),
+            policy_lines
+                .into_iter()
+                .chain(std::iter::once(format!(
+                    "group={} previous_enabled={} enabled={}",
+                    group, previous, enabled
+                )))
+                .collect(),
+        ))
     }
 
     fn remove_trigger(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
@@ -865,6 +1130,16 @@ impl CommandHost {
     fn save_triggers(&self, path: &str) -> SwatResult<CommandOutput> {
         let file = PersistedTriggerFile {
             format_version: TRIGGER_FILE_FORMAT_VERSION,
+            predicates: self.predicate_specs.values().cloned().collect(),
+            groups: self
+                .trigger_engine
+                .group_policies()
+                .into_iter()
+                .map(|group| PersistedTriggerGroupSpec {
+                    name: group.name,
+                    enabled: group.enabled,
+                })
+                .collect(),
             triggers: self
                 .trigger_engine
                 .triggers()
@@ -890,6 +1165,7 @@ impl CommandHost {
             SwatError::new(format!("failed to decode trigger file '{}': {err}", path))
         })?;
         if file.format_version != LEGACY_TRIGGER_FILE_FORMAT_VERSION
+            && file.format_version != PRE_GROUP_TRIGGER_FILE_FORMAT_VERSION
             && file.format_version != TRIGGER_FILE_FORMAT_VERSION
         {
             return Err(SwatError::new(format!(
@@ -900,8 +1176,40 @@ impl CommandHost {
 
         self.trigger_engine = TriggerEngine::new();
         self.trigger_specs.clear();
+        self.predicate_specs.clear();
 
         let mut lines = Vec::new();
+
+        for predicate in &file.predicates {
+            if let Some(session_id) = self.session_id {
+                let report = {
+                    let mut api = LiveSessionApi::new(
+                        &mut self.manager,
+                        self.adapter.as_mut(),
+                        self.store.as_mut(),
+                        &mut self.trigger_engine,
+                    );
+                    api.define_breakpoint_predicate(
+                        session_id,
+                        &predicate.name,
+                        TriggerPredicate::Expr(parse_expression(&predicate.expr)?),
+                    )?
+                };
+                lines.extend(report.policy_events.iter().map(format_event_line));
+            } else {
+                self.trigger_engine.define_predicate(
+                    predicate.name.clone(),
+                    TriggerPredicate::Expr(parse_expression(&predicate.expr)?),
+                );
+            }
+            self.predicate_specs
+                .insert(predicate.name.clone(), predicate.clone());
+            lines.push(format!(
+                "predicate={} expr={:?}",
+                predicate.name, predicate.expr
+            ));
+        }
+
         let mut loaded_count = 0usize;
         for spec in file.triggers {
             let trigger = build_trigger_from_spec(&spec)?;
@@ -922,15 +1230,39 @@ impl CommandHost {
             }
             self.trigger_specs.insert(trigger_id, spec.clone());
             lines.push(format!(
-                "trigger={} name={} fire_once={} enabled={} actions={} expr={:?}",
+                "trigger={} name={} fire_once={} enabled={} actions={}{} condition={}",
                 trigger_id.raw(),
                 spec.name,
                 spec.fire_once,
                 spec.enabled,
                 format_persisted_trigger_actions(&spec.actions),
-                spec.expr
+                spec.group
+                    .as_ref()
+                    .map(|group| format!(" group={group}"))
+                    .unwrap_or_default(),
+                format_persisted_trigger_condition(&spec)
             ));
             loaded_count += 1;
+        }
+
+        for group in &file.groups {
+            if let Some(session_id) = self.session_id {
+                let report = {
+                    let mut api = LiveSessionApi::new(
+                        &mut self.manager,
+                        self.adapter.as_mut(),
+                        self.store.as_mut(),
+                        &mut self.trigger_engine,
+                    );
+                    api.set_breakpoint_group_enabled(session_id, &group.name, group.enabled)?
+                };
+                lines.extend(report.policy_events.iter().map(format_event_line));
+            } else {
+                let _ = self
+                    .trigger_engine
+                    .set_group_enabled(&group.name, group.enabled);
+            }
+            lines.push(format!("group={} enabled={}", group.name, group.enabled));
         }
 
         Ok(CommandOutput::new(
@@ -1590,9 +1922,39 @@ fn parse_breakpoint_command(rest: &str) -> SwatResult<Command> {
     if trimmed == "groups" {
         return Ok(Command::BreakpointGroups);
     }
+    if trimmed == "predicates" {
+        return Ok(Command::BreakpointPredicates);
+    }
+    if trimmed == "group list" {
+        return Ok(Command::BreakpointDefinitionGroups);
+    }
     if let Some(rest) = trimmed.strip_prefix("show ") {
         return Ok(Command::BreakpointShow {
             trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "breakpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("predicate add ") {
+        return parse_breakpoint_predicate_add(rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("predicate remove ") {
+        let name = rest.trim();
+        if name.is_empty() {
+            return Err(SwatError::new(
+                "breakpoint predicate remove requires a predicate name",
+            ));
+        }
+        return Ok(Command::BreakpointPredicateRemove {
+            name: name.to_string(),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("group enable ") {
+        return Ok(Command::BreakpointGroupEnable {
+            group: parse_breakpoint_group_name(rest, "breakpoint group enable")?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("group disable ") {
+        return Ok(Command::BreakpointGroupDisable {
+            group: parse_breakpoint_group_name(rest, "breakpoint group disable")?,
         });
     }
     if let Some(rest) = trimmed.strip_prefix("add ") {
@@ -1696,21 +2058,22 @@ fn parse_source_view(rest: &str) -> SwatResult<Command> {
 
 fn parse_trigger_expr(rest: &str, fire_once: bool) -> SwatResult<Command> {
     let trimmed = rest.trim();
-    let Some((name, expr)) = trimmed.split_once(char::is_whitespace) else {
+    let Some((name, tail)) = trimmed.split_once(char::is_whitespace) else {
         return Err(SwatError::new(
             "trigger-expr requires a name followed by an expression",
         ));
     };
-    let expr = expr.trim();
-    if expr.is_empty() {
+    let (group, condition) = parse_optional_breakpoint_group(tail)?;
+    if matches!(&condition, BreakpointConditionInput::Expression(expr) if expr.is_empty()) {
         return Err(SwatError::new(
             "trigger-expr requires a non-empty expression",
         ));
     }
     Ok(Command::TriggerExpr {
         name: name.to_string(),
-        expr: expr.to_string(),
+        condition,
         fire_once,
+        group,
     })
 }
 
@@ -1728,6 +2091,17 @@ fn parse_trigger_snapshot(rest: &str) -> SwatResult<Command> {
         ));
     }
 
+    let (group, tail) = split_optional_breakpoint_group(tail);
+    let tail = tail.trim();
+    if let Some((predicate, reason)) = split_predicate_ref_and_reason(tail) {
+        return Ok(Command::TriggerSnapshot {
+            name: name.to_string(),
+            condition: BreakpointConditionInput::PredicateRef(predicate.to_string()),
+            reason: reason.to_string(),
+            group,
+        });
+    }
+
     for (index, ch) in tail.char_indices().rev() {
         if !ch.is_whitespace() {
             continue;
@@ -1740,8 +2114,9 @@ fn parse_trigger_snapshot(rest: &str) -> SwatResult<Command> {
         if parse_expression(expr).is_ok() {
             return Ok(Command::TriggerSnapshot {
                 name: name.to_string(),
-                expr: expr.to_string(),
+                condition: BreakpointConditionInput::Expression(expr.to_string()),
                 reason: reason.to_string(),
+                group,
             });
         }
     }
@@ -1757,6 +2132,88 @@ fn parse_trigger_path(rest: &str, command: &str) -> SwatResult<String> {
         return Err(SwatError::new(format!("{command} requires a file path")));
     }
     Ok(path.to_string())
+}
+
+fn parse_breakpoint_group_name(rest: &str, command: &str) -> SwatResult<String> {
+    let group = rest.trim();
+    if group.is_empty() {
+        return Err(SwatError::new(format!("{command} requires a group name")));
+    }
+    Ok(group.to_string())
+}
+
+fn parse_breakpoint_predicate_add(rest: &str) -> SwatResult<Command> {
+    let trimmed = rest.trim();
+    let Some((name, expr)) = trimmed.split_once(char::is_whitespace) else {
+        return Err(SwatError::new(
+            "breakpoint predicate add requires a name followed by an expression",
+        ));
+    };
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Err(SwatError::new(
+            "breakpoint predicate add requires a non-empty expression",
+        ));
+    }
+    parse_expression(expr)?;
+    Ok(Command::BreakpointPredicateAdd {
+        name: name.to_string(),
+        expr: expr.to_string(),
+    })
+}
+
+fn parse_optional_breakpoint_group(
+    rest: &str,
+) -> SwatResult<(Option<String>, BreakpointConditionInput)> {
+    let (group, tail) = split_optional_breakpoint_group(rest);
+    parse_breakpoint_condition_input(tail).map(|condition| (group, condition))
+}
+
+fn split_optional_breakpoint_group(rest: &str) -> (Option<String>, &str) {
+    let trimmed = rest.trim();
+    let Some((head, tail)) = trimmed.split_once(char::is_whitespace) else {
+        if let Some(group) = trimmed.strip_prefix("group=") {
+            return (Some(group.to_string()), "");
+        }
+        return (None, trimmed);
+    };
+    if let Some(group) = head.strip_prefix("group=") {
+        (Some(group.to_string()), tail.trim_start())
+    } else {
+        (None, trimmed)
+    }
+}
+
+fn parse_breakpoint_condition_input(rest: &str) -> SwatResult<BreakpointConditionInput> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Err(SwatError::new(
+            "breakpoint condition requires an expression or @predicate reference",
+        ));
+    }
+    if let Some(predicate) = trimmed.strip_prefix('@') {
+        if predicate.is_empty() || predicate.contains(char::is_whitespace) {
+            return Err(SwatError::new(
+                "predicate references must use a single token like @search_tool",
+            ));
+        }
+        return Ok(BreakpointConditionInput::PredicateRef(
+            predicate.to_string(),
+        ));
+    }
+    parse_expression(trimmed)?;
+    Ok(BreakpointConditionInput::Expression(trimmed.to_string()))
+}
+
+fn split_predicate_ref_and_reason(rest: &str) -> Option<(&str, &str)> {
+    let (head, tail) = rest.split_once(char::is_whitespace)?;
+    let predicate = head.strip_prefix('@')?;
+    let reason = tail.trim();
+    if predicate.is_empty() || reason.is_empty() {
+        None
+    } else {
+        Some((predicate, reason))
+    }
 }
 
 fn parse_u64(value: &str, label: &str) -> SwatResult<u64> {
@@ -1801,12 +2258,19 @@ fn format_event_line(event: &EventEnvelope) -> String {
 }
 
 fn format_trigger_match(trigger_match: &TriggerMatch) -> String {
-    format!(
-        "trigger={} name={} event={}",
-        trigger_match.trigger_id.raw(),
-        trigger_match.trigger_name,
-        trigger_match.event_id.raw()
-    )
+    let mut parts = vec![
+        format!("trigger={}", trigger_match.trigger_id.raw()),
+        format!("name={}", trigger_match.trigger_name),
+        format!("event={}", trigger_match.event_id.raw()),
+        format!("seq={}", trigger_match.sequence_no),
+    ];
+    if let Some(group) = &trigger_match.group {
+        parts.push(format!("group={group}"));
+    }
+    if let Some(predicate_name) = &trigger_match.predicate_name {
+        parts.push(format!("predicate={predicate_name}"));
+    }
+    parts.join(" ")
 }
 
 fn format_controlled_pump_lines(report: &swat_control::ControlledPumpReport) -> Vec<String> {
@@ -1818,6 +2282,7 @@ fn format_controlled_pump_lines(report: &swat_control::ControlledPumpReport) -> 
         .collect::<Vec<_>>();
     lines.extend(report.trigger_events.iter().map(format_event_line));
     lines.extend(report.trigger_matches.iter().map(format_trigger_match));
+    lines.extend(report.stop_reasons.iter().map(format_stop_reason));
     for control_report in &report.control_reports {
         lines.extend(control_report.stored_events.iter().map(format_event_line));
         lines.push(format!(
@@ -1830,9 +2295,10 @@ fn format_controlled_pump_lines(report: &swat_control::ControlledPumpReport) -> 
 
 fn format_breakpoint_summary(breakpoint: &BreakpointSummary) -> String {
     format!(
-        "bp={} state={} lifetime={} disposition={} hits={} last_event={} last_seq={} name={} actions={} when={:?}",
+        "bp={} state={} configured={} lifetime={} disposition={} hits={} last_event={} last_seq={} name={}{} predicate={} actions={} when={}",
         breakpoint.trigger_id.raw(),
         breakpoint.state.label(),
+        breakpoint.configured_state.label(),
         breakpoint.lifetime.label(),
         breakpoint.disposition.label(),
         breakpoint.hit_count,
@@ -1845,9 +2311,79 @@ fn format_breakpoint_summary(breakpoint: &BreakpointSummary) -> String {
             .map(|sequence_no| sequence_no.to_string())
             .unwrap_or_else(|| "-".to_string()),
         breakpoint.name,
+        breakpoint
+            .group
+            .as_ref()
+            .map(|group| format!(" group={group}"))
+            .unwrap_or_default(),
+        breakpoint.predicate_name.as_deref().unwrap_or("inline"),
         breakpoint.actions.join(","),
         breakpoint.predicate
     )
+}
+
+fn format_breakpoint_definition_group(group: &BreakpointDefinitionGroup) -> String {
+    format!(
+        "definition_group={} enabled={} count={}",
+        group.name,
+        group.enabled,
+        group.breakpoints.len()
+    )
+}
+
+fn format_breakpoint_predicate_summary(predicate: &BreakpointPredicateSummary) -> String {
+    format!(
+        "predicate={} breakpoints={} when={}",
+        predicate.name, predicate.breakpoint_count, predicate.predicate
+    )
+}
+
+fn format_stop_reason(stop_reason: &StopReason) -> String {
+    match stop_reason.kind {
+        StopReasonKind::Breakpoint => format!(
+            "stop kind=breakpoint trigger={} name={}{} event={} seq={} summary={}",
+            stop_reason
+                .trigger_id
+                .map(|trigger_id| trigger_id.raw().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason.trigger_name.as_deref().unwrap_or("-"),
+            stop_reason
+                .group
+                .as_ref()
+                .map(|group| format!(" group={group}"))
+                .unwrap_or_default(),
+            stop_reason
+                .event_id
+                .map(|event_id| event_id.raw().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason
+                .sequence_no
+                .map(|sequence_no| sequence_no.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason.summary
+        ),
+        StopReasonKind::TargetExit => format!(
+            "stop kind=target_exit event={} seq={} summary={}",
+            stop_reason
+                .event_id
+                .map(|event_id| event_id.raw().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason
+                .sequence_no
+                .map(|sequence_no| sequence_no.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason.summary
+        ),
+        StopReasonKind::ControlRejected => format!(
+            "stop kind=control_rejected action={} summary={}",
+            stop_reason
+                .control_action
+                .as_ref()
+                .map(|action| format!("{action:?}"))
+                .unwrap_or_else(|| "-".to_string()),
+            stop_reason.summary
+        ),
+    }
 }
 
 fn format_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {
@@ -1944,13 +2480,31 @@ fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
 }
 
 const LEGACY_TRIGGER_FILE_FORMAT_VERSION: u32 = 1;
-const TRIGGER_FILE_FORMAT_VERSION: u32 = 2;
+const PRE_GROUP_TRIGGER_FILE_FORMAT_VERSION: u32 = 2;
+const TRIGGER_FILE_FORMAT_VERSION: u32 = 3;
 const UNTIL_POLL_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedTriggerFile {
     format_version: u32,
+    #[serde(default)]
+    predicates: Vec<PersistedPredicateSpec>,
+    #[serde(default)]
+    groups: Vec<PersistedTriggerGroupSpec>,
     triggers: Vec<PersistedTriggerSpec>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedPredicateSpec {
+    name: String,
+    expr: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedTriggerGroupSpec {
+    name: String,
+    #[serde(default = "default_trigger_enabled")]
+    enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1983,10 +2537,15 @@ impl PersistedTriggerAction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedTriggerSpec {
     name: String,
-    expr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    predicate_ref: Option<String>,
     fire_once: bool,
     #[serde(default = "default_trigger_enabled")]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
     #[serde(default = "default_persisted_trigger_actions")]
     actions: Vec<PersistedTriggerAction>,
 }
@@ -2000,15 +2559,18 @@ fn default_persisted_trigger_actions() -> Vec<PersistedTriggerAction> {
 }
 
 fn build_trigger_from_spec(spec: &PersistedTriggerSpec) -> SwatResult<Trigger> {
-    let parsed = parse_expression(&spec.expr)?;
+    let predicate = build_trigger_predicate(spec)?;
     let mut trigger = Trigger::new(
         &spec.name,
-        swat_control::TriggerPredicate::Expr(parsed),
+        predicate,
         spec.actions
             .iter()
             .map(PersistedTriggerAction::to_runtime_action)
             .collect(),
     );
+    if let Some(group) = spec.group.as_deref() {
+        trigger = trigger.in_group(group);
+    }
     if spec.fire_once {
         trigger = trigger.fire_once();
     }
@@ -2031,6 +2593,27 @@ fn format_persisted_trigger_actions(actions: &[PersistedTriggerAction]) -> Strin
         .join(",")
 }
 
+fn build_trigger_predicate(spec: &PersistedTriggerSpec) -> SwatResult<TriggerPredicate> {
+    if let Some(predicate_ref) = spec.predicate_ref.as_deref() {
+        return Ok(TriggerPredicate::Named(predicate_ref.to_string()));
+    }
+    let expr = spec.expr.as_deref().ok_or_else(|| {
+        SwatError::new(format!(
+            "trigger {} is missing both an expression and a predicate reference",
+            spec.name
+        ))
+    })?;
+    Ok(TriggerPredicate::Expr(parse_expression(expr)?))
+}
+
+fn format_persisted_trigger_condition(spec: &PersistedTriggerSpec) -> String {
+    spec.predicate_ref
+        .as_ref()
+        .map(|name| format!("@{name}"))
+        .or_else(|| spec.expr.clone())
+        .unwrap_or_else(|| "<missing>".to_string())
+}
+
 fn payload_summary(event: &EventEnvelope) -> Option<&str> {
     match &event.payload {
         EventPayload::Empty => None,
@@ -2046,6 +2629,16 @@ fn payload_summary(event: &EventEnvelope) -> Option<&str> {
 
 impl CommandHost {
     fn add_trigger_spec(&mut self, spec: PersistedTriggerSpec) -> SwatResult<CommandOutput> {
+        if let Some(predicate_ref) = spec.predicate_ref.as_deref() {
+            if self.trigger_engine.predicate(predicate_ref).is_none()
+                && !self.predicate_specs.contains_key(predicate_ref)
+            {
+                return Err(SwatError::new(format!(
+                    "unknown breakpoint predicate {}",
+                    predicate_ref
+                )));
+            }
+        }
         let trigger = build_trigger_from_spec(&spec)?;
         let trigger_id = trigger.trigger_id;
         let actions = format_persisted_trigger_actions(&spec.actions);
@@ -2075,13 +2668,17 @@ impl CommandHost {
             policy_lines
                 .into_iter()
                 .chain(std::iter::once(format!(
-                    "trigger={} name={} fire_once={} enabled={} actions={} expr={:?}",
+                    "trigger={} name={} fire_once={} enabled={} actions={}{} condition={}",
                     trigger_id.raw(),
                     spec.name,
                     spec.fire_once,
                     spec.enabled,
                     actions,
-                    spec.expr
+                    spec.group
+                        .as_ref()
+                        .map(|group| format!(" group={group}"))
+                        .unwrap_or_default(),
+                    format_persisted_trigger_condition(&spec)
                 )))
                 .collect(),
         ))
