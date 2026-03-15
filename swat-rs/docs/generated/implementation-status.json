@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 13,
-    "pending": 8,
+    "done": 14,
+    "pending": 7,
     "blocked": 0
   },
   "tasks": [
@@ -128,12 +128,12 @@
     },
     {
       "task": "T-014",
-      "status": "pending",
+      "status": "done",
       "milestone": "M4",
       "description": "Add package-oriented script loading and shared command metadata integration.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Recover conceptual autoload parity without recreating Tcl chaos."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "cc3fb524",
+      "notes": "Built-in script packages now autoload over the public API, and shell help/search/completion reuse the same package metadata."
     },
     {
       "task": "T-015",
