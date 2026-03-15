@@ -65,6 +65,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/architecture/execution-strategy.md`
 - `docs/architecture/crate-map.md`
 - `docs/architecture/agent-event-protocol.md`
+- `docs/milestones/milestone-1-command-ecology.md`
 - `IMPLEMENTATION_PLAN.md`
 - `CONTINUATION_PROMPT.md`
 - `PROJECT_COMPLETION_PLAN.md`

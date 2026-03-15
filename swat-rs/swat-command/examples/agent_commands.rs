@@ -50,6 +50,7 @@ time.sleep(0.1)
         "status".to_string(),
         "help breakpoint".to_string(),
         "help source".to_string(),
+        "help search break".to_string(),
         r#"breakpoint once pause_web kind == ToolBoundary and artifact.json $.name == "web_search""#
             .to_string(),
         format!("breakpoint save {trigger_path}"),
@@ -63,6 +64,9 @@ time.sleep(0.1)
         r#"query kind == ToolBoundary and artifact.json $.name == "web_search""#.to_string(),
         "stack".to_string(),
         "source file /tmp/runtime.py".to_string(),
+        "script ctx.stack_frame_count()".to_string(),
+        "script ctx.stack_frame_label(0)".to_string(),
+        "script ctx.source_file_count()".to_string(),
         "script ctx.event_count()".to_string(),
     ] {
         let output = host.execute(&command)?;
