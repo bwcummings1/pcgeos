@@ -3,11 +3,13 @@
 use std::collections::BTreeMap;
 
 use rhai::{Dynamic, Engine, EvalAltResult, Scope};
-use swat_api::{BreakpointGroupKind, BreakpointState, LiveSessionApi, TraceInspector};
+use swat_api::{
+    BreakpointGroupKind, BreakpointState, LiveSessionApi, TraceInspector, WatchpointSpec,
+};
 use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate};
 use swat_core::{
-    ArtifactId, ControlAction, EventEnvelope, SessionId, SnapshotId, SnapshotRecord, SwatError,
-    SwatResult, TargetAdapter, TriggerId,
+    ArtifactId, ControlAction, EventEnvelope, EventKind, SessionId, SnapshotId, SnapshotRecord,
+    SwatError, SwatResult, TargetAdapter, TriggerId,
 };
 use swat_expr::parse_expression;
 use swat_session::SessionManager;
@@ -366,6 +368,120 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
             .ok_or_else(|| SwatError::new(format!("unknown breakpoint {}", trigger_id.raw())))
     }
 
+    pub fn breakpoint_definition_group_count(&mut self) -> i64 {
+        self.api().breakpoint_definition_groups().len() as i64
+    }
+
+    pub fn breakpoint_definition_group_size(&mut self, name: &str) -> i64 {
+        self.api()
+            .breakpoint_definition_groups()
+            .into_iter()
+            .find(|group| group.name == name)
+            .map(|group| group.breakpoints.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn breakpoint_definition_group_enabled(&mut self, name: &str) -> SwatResult<bool> {
+        self.api()
+            .breakpoint_definition_groups()
+            .into_iter()
+            .find(|group| group.name == name)
+            .map(|group| group.enabled)
+            .ok_or_else(|| SwatError::new(format!("unknown breakpoint group {name}")))
+    }
+
+    pub fn breakpoint_predicate_count(&mut self) -> i64 {
+        self.api().breakpoint_predicates().len() as i64
+    }
+
+    pub fn breakpoint_predicate_breakpoint_count(&mut self, name: &str) -> SwatResult<i64> {
+        self.api()
+            .breakpoint_predicates()
+            .into_iter()
+            .find(|predicate| predicate.name == name)
+            .map(|predicate| predicate.breakpoint_count as i64)
+            .ok_or_else(|| SwatError::new(format!("unknown breakpoint predicate {name}")))
+    }
+
+    pub fn define_breakpoint_predicate(&mut self, name: &str, expr: &str) -> SwatResult<bool> {
+        let session_id = self.session_id;
+        let predicate = TriggerPredicate::Expr(parse_expression(expr)?);
+        self.api()
+            .define_breakpoint_predicate(session_id, name, predicate)
+            .map(|report| report.value)
+    }
+
+    pub fn remove_breakpoint_predicate(&mut self, name: &str) -> SwatResult<String> {
+        let session_id = self.session_id;
+        self.api()
+            .remove_breakpoint_predicate(session_id, name)
+            .map(|report| report.value.name)
+    }
+
+    pub fn set_breakpoint_group_enabled(&mut self, group: &str, enabled: bool) -> SwatResult<bool> {
+        let session_id = self.session_id;
+        self.api()
+            .set_breakpoint_group_enabled(session_id, group, enabled)
+            .map(|report| report.value)
+    }
+
+    pub fn watchpoint_count(&mut self) -> i64 {
+        self.api().watchpoint_summaries().len() as i64
+    }
+
+    pub fn watchpoint_hit_count(&mut self, trigger_id: TriggerId) -> SwatResult<i64> {
+        self.api()
+            .watchpoint_detail(trigger_id)
+            .map(|detail| detail.watchpoint.breakpoint.hit_count as i64)
+            .ok_or_else(|| SwatError::new(format!("unknown watchpoint {}", trigger_id.raw())))
+    }
+
+    pub fn add_watchpoint(
+        &mut self,
+        name: &str,
+        value_key: &str,
+        path: &str,
+        fire_once: bool,
+    ) -> SwatResult<TriggerId> {
+        self.add_watchpoint_with_scope(name, value_key, path, -1, "", "", fire_once, "")
+    }
+
+    pub fn add_watchpoint_with_scope(
+        &mut self,
+        name: &str,
+        value_key: &str,
+        path: &str,
+        after_millis: i64,
+        event_kind: &str,
+        summary_contains: &str,
+        fire_once: bool,
+        group: &str,
+    ) -> SwatResult<TriggerId> {
+        let session_id = self.session_id;
+        let mut spec = WatchpointSpec::new(name, value_key);
+        if !path.is_empty() {
+            spec = spec.at_path(path);
+        }
+        if after_millis >= 0 {
+            spec = spec.after_millis(after_millis as u64);
+        }
+        if !event_kind.is_empty() {
+            spec = spec.in_event_kind(parse_event_kind(event_kind)?);
+        }
+        if !summary_contains.is_empty() {
+            spec = spec.with_summary_contains(summary_contains);
+        }
+        if fire_once {
+            spec = spec.fire_once();
+        }
+        if !group.is_empty() {
+            spec = spec.in_group(group);
+        }
+        self.api()
+            .add_watchpoint(session_id, spec)
+            .map(|report| report.value)
+    }
+
     pub fn pump_once(&mut self) -> SwatResult<usize> {
         Ok(self
             .manager
@@ -515,5 +631,24 @@ fn parse_breakpoint_group_kind(kind: &str) -> SwatResult<BreakpointGroupKind> {
         other => Err(SwatError::new(format!(
             "unknown breakpoint group kind '{other}'"
         ))),
+    }
+}
+
+fn parse_event_kind(kind: &str) -> SwatResult<EventKind> {
+    match kind {
+        "Lifecycle" => Ok(EventKind::Lifecycle),
+        "Control" => Ok(EventKind::Control),
+        "Execution" => Ok(EventKind::Execution),
+        "StateMutation" => Ok(EventKind::StateMutation),
+        "ModelBoundary" => Ok(EventKind::ModelBoundary),
+        "ToolBoundary" => Ok(EventKind::ToolBoundary),
+        "SourceResolution" => Ok(EventKind::SourceResolution),
+        "SchemaResolution" => Ok(EventKind::SchemaResolution),
+        "Snapshot" => Ok(EventKind::Snapshot),
+        "Replay" => Ok(EventKind::Replay),
+        "TriggerHit" => Ok(EventKind::TriggerHit),
+        "ValueObserved" => Ok(EventKind::ValueObserved),
+        "PolicyDecision" => Ok(EventKind::PolicyDecision),
+        other => Err(SwatError::new(format!("unknown event kind '{other}'"))),
     }
 }

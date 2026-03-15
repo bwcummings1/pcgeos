@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use swat_control::{
-    Trigger, TriggerEngine, TriggerPredicate, TriggerPredicateDefinition, format_trigger_predicate,
+    Trigger, TriggerAction, TriggerEngine, TriggerPredicate, TriggerPredicateDefinition,
+    format_trigger_predicate,
 };
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, PendingEvent,
@@ -195,6 +196,86 @@ pub struct BreakpointPredicateSummary {
     pub name: String,
     pub predicate: String,
     pub breakpoint_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchpointSummary {
+    pub breakpoint: BreakpointSummary,
+    pub value_key: String,
+    pub path: Option<String>,
+    pub after_millis: Option<u64>,
+    pub event_kind: Option<EventKind>,
+    pub summary_contains: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchpointDetail {
+    pub watchpoint: WatchpointSummary,
+    pub last_hit_event: Option<EventEnvelope>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchpointSpec {
+    pub name: String,
+    pub value_key: String,
+    pub path: Option<String>,
+    pub after_millis: Option<u64>,
+    pub event_kind: Option<EventKind>,
+    pub summary_contains: Option<String>,
+    pub fire_once: bool,
+    pub group: Option<String>,
+    pub snapshot_reason: Option<String>,
+}
+
+impl WatchpointSpec {
+    pub fn new(name: impl Into<String>, value_key: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value_key: value_key.into(),
+            path: None,
+            after_millis: None,
+            event_kind: None,
+            summary_contains: None,
+            fire_once: false,
+            group: None,
+            snapshot_reason: None,
+        }
+    }
+
+    pub fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn after_millis(mut self, millis: u64) -> Self {
+        self.after_millis = Some(millis);
+        self
+    }
+
+    pub fn in_event_kind(mut self, kind: EventKind) -> Self {
+        self.event_kind = Some(kind);
+        self
+    }
+
+    pub fn with_summary_contains(mut self, needle: impl Into<String>) -> Self {
+        self.summary_contains = Some(needle.into());
+        self
+    }
+
+    pub fn fire_once(mut self) -> Self {
+        self.fire_once = true;
+        self
+    }
+
+    pub fn in_group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    pub fn create_snapshot(mut self, reason: impl Into<String>) -> Self {
+        self.snapshot_reason = Some(reason.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -862,6 +943,31 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
             .collect()
     }
 
+    pub fn watchpoint_summaries(&self) -> Vec<WatchpointSummary> {
+        self.trigger_engine
+            .triggers()
+            .iter()
+            .filter_map(|trigger| build_watchpoint_summary(trigger, self.trigger_engine))
+            .collect()
+    }
+
+    pub fn watchpoint_detail(&self, trigger_id: TriggerId) -> Option<WatchpointDetail> {
+        let watchpoint = self
+            .trigger_engine
+            .triggers()
+            .iter()
+            .find(|trigger| trigger.trigger_id == trigger_id)
+            .and_then(|trigger| build_watchpoint_summary(trigger, self.trigger_engine))?;
+        let last_hit_event = watchpoint
+            .breakpoint
+            .last_hit_event_id
+            .and_then(|event_id| self.inspector().event_by_id(event_id));
+        Some(WatchpointDetail {
+            watchpoint,
+            last_hit_event,
+        })
+    }
+
     pub fn control(
         &mut self,
         session_id: SessionId,
@@ -955,6 +1061,14 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
             value: trigger_id,
             policy_events,
         })
+    }
+
+    pub fn add_watchpoint(
+        &mut self,
+        session_id: SessionId,
+        spec: WatchpointSpec,
+    ) -> SwatResult<MutationReport<TriggerId>> {
+        self.add_trigger(session_id, build_watchpoint_trigger(spec))
     }
 
     pub fn define_breakpoint_predicate(
@@ -1173,6 +1287,148 @@ fn build_breakpoint_summary(trigger: &Trigger, engine: &TriggerEngine) -> Breakp
         last_hit_event_id: trigger.last_hit_event_id,
         last_hit_sequence_no: trigger.last_hit_sequence_no,
     }
+}
+
+#[derive(Default)]
+struct WatchpointDescriptor {
+    value_key: Option<String>,
+    path: Option<String>,
+    after_millis: Option<u64>,
+    event_kind: Option<EventKind>,
+    summary_contains: Option<String>,
+}
+
+fn build_watchpoint_summary(
+    trigger: &Trigger,
+    engine: &TriggerEngine,
+) -> Option<WatchpointSummary> {
+    let descriptor = extract_watchpoint_descriptor(&trigger.predicate, engine)?;
+    Some(WatchpointSummary {
+        breakpoint: build_breakpoint_summary(trigger, engine),
+        value_key: descriptor.value_key?,
+        path: descriptor.path,
+        after_millis: descriptor.after_millis,
+        event_kind: descriptor.event_kind,
+        summary_contains: descriptor.summary_contains,
+    })
+}
+
+fn build_watchpoint_trigger(spec: WatchpointSpec) -> Trigger {
+    let mut predicates = vec![TriggerPredicate::ValueChanged {
+        value_key: spec.value_key,
+        path: spec.path,
+    }];
+    if let Some(millis) = spec.after_millis {
+        predicates.push(TriggerPredicate::ObservedAfter { millis });
+    }
+    if let Some(kind) = spec.event_kind {
+        predicates.push(TriggerPredicate::EventKindIs(kind));
+    }
+    if let Some(summary_contains) = spec.summary_contains {
+        predicates.push(TriggerPredicate::SummaryContains(summary_contains));
+    }
+    let predicate = if predicates.len() == 1 {
+        predicates.remove(0)
+    } else {
+        TriggerPredicate::All(predicates)
+    };
+    let actions = spec
+        .snapshot_reason
+        .map(|reason| vec![TriggerAction::CreateSnapshot { reason }])
+        .unwrap_or_else(|| vec![TriggerAction::PauseTarget]);
+    let mut trigger = Trigger::new(spec.name, predicate, actions);
+    if spec.fire_once {
+        trigger = trigger.fire_once();
+    }
+    if let Some(group) = spec.group {
+        trigger = trigger.in_group(group);
+    }
+    trigger
+}
+
+fn extract_watchpoint_descriptor(
+    predicate: &TriggerPredicate,
+    engine: &TriggerEngine,
+) -> Option<WatchpointDescriptor> {
+    match predicate {
+        TriggerPredicate::Named(name) => engine
+            .predicate(name)
+            .and_then(|predicate| extract_watchpoint_descriptor(predicate, engine)),
+        TriggerPredicate::ValueChanged { value_key, path } => Some(WatchpointDescriptor {
+            value_key: Some(value_key.clone()),
+            path: path.clone(),
+            after_millis: None,
+            event_kind: None,
+            summary_contains: None,
+        }),
+        TriggerPredicate::ObservedAfter { millis } => Some(WatchpointDescriptor {
+            value_key: None,
+            path: None,
+            after_millis: Some(*millis),
+            event_kind: None,
+            summary_contains: None,
+        }),
+        TriggerPredicate::EventKindIs(kind) => Some(WatchpointDescriptor {
+            value_key: None,
+            path: None,
+            after_millis: None,
+            event_kind: Some(*kind),
+            summary_contains: None,
+        }),
+        TriggerPredicate::SummaryContains(summary) => Some(WatchpointDescriptor {
+            value_key: None,
+            path: None,
+            after_millis: None,
+            event_kind: None,
+            summary_contains: Some(summary.clone()),
+        }),
+        TriggerPredicate::All(predicates) => {
+            let mut descriptor = WatchpointDescriptor::default();
+            for predicate in predicates {
+                let next = extract_watchpoint_descriptor(predicate, engine)?;
+                merge_watchpoint_descriptor(&mut descriptor, next)?;
+            }
+            descriptor.value_key.as_ref()?;
+            Some(descriptor)
+        }
+        _ => None,
+    }
+}
+
+fn merge_watchpoint_descriptor(
+    descriptor: &mut WatchpointDescriptor,
+    next: WatchpointDescriptor,
+) -> Option<()> {
+    if let Some(value_key) = next.value_key {
+        if descriptor.value_key.replace(value_key).is_some() {
+            return None;
+        }
+    }
+    if let Some(path) = next.path {
+        if descriptor.path.replace(path).is_some() {
+            return None;
+        }
+    }
+    if let Some(after_millis) = next.after_millis {
+        if descriptor.after_millis.replace(after_millis).is_some() {
+            return None;
+        }
+    }
+    if let Some(event_kind) = next.event_kind {
+        if descriptor.event_kind.replace(event_kind).is_some() {
+            return None;
+        }
+    }
+    if let Some(summary_contains) = next.summary_contains {
+        if descriptor
+            .summary_contains
+            .replace(summary_contains)
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(())
 }
 
 fn breakpoint_disposition(actions: &[swat_control::TriggerAction]) -> BreakpointDisposition {

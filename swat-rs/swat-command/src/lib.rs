@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use swat_api::{
     BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
-    LiveSessionApi, StackFrame, TraceInspector,
+    LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec, WatchpointSummary,
 };
 use swat_control::{
     StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
@@ -112,6 +112,22 @@ pub enum Command {
     BreakpointGroupDisable {
         group: String,
     },
+    Watchpoints,
+    WatchpointShow {
+        trigger_id: TriggerId,
+    },
+    WatchpointAdd {
+        spec: WatchpointSpec,
+    },
+    WatchpointEnable {
+        trigger_id: TriggerId,
+    },
+    WatchpointDisable {
+        trigger_id: TriggerId,
+    },
+    WatchpointRemove {
+        trigger_id: TriggerId,
+    },
     Triggers,
     TriggerExpr {
         name: String,
@@ -180,7 +196,7 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
-    fn new(summary: impl Into<String>, lines: Vec<String>) -> Self {
+    pub fn new(summary: impl Into<String>, lines: Vec<String>) -> Self {
         Self {
             summary: summary.into(),
             lines,
@@ -254,6 +270,16 @@ impl CommandHost {
             Command::BreakpointGroupDisable { group } => {
                 self.set_breakpoint_group_enabled(&group, false)
             }
+            Command::Watchpoints => self.list_watchpoints(),
+            Command::WatchpointShow { trigger_id } => self.show_watchpoint(trigger_id),
+            Command::WatchpointAdd { spec } => self.add_watchpoint(spec),
+            Command::WatchpointEnable { trigger_id } => {
+                self.set_watchpoint_enabled(trigger_id, true)
+            }
+            Command::WatchpointDisable { trigger_id } => {
+                self.set_watchpoint_enabled(trigger_id, false)
+            }
+            Command::WatchpointRemove { trigger_id } => self.remove_watchpoint(trigger_id),
             Command::Triggers => Ok(self.list_triggers()),
             Command::TriggerExpr {
                 name,
@@ -987,6 +1013,7 @@ impl CommandHost {
             name: name.to_string(),
             expr: condition.as_expression().map(ToString::to_string),
             predicate_ref: condition.predicate_ref().map(ToString::to_string),
+            watchpoint: None,
             fire_once,
             enabled: true,
             group: group.map(ToString::to_string),
@@ -1005,6 +1032,7 @@ impl CommandHost {
             name: name.to_string(),
             expr: condition.as_expression().map(ToString::to_string),
             predicate_ref: condition.predicate_ref().map(ToString::to_string),
+            watchpoint: None,
             fire_once: false,
             enabled: true,
             group: group.map(ToString::to_string),
@@ -1058,6 +1086,158 @@ impl CommandHost {
                 )))
                 .collect(),
         ))
+    }
+
+    fn list_watchpoints(&mut self) -> SwatResult<CommandOutput> {
+        let watchpoints = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.watchpoint_summaries()
+        };
+        Ok(CommandOutput::new(
+            format!("{} watchpoint(s)", watchpoints.len()),
+            watchpoints.iter().map(format_watchpoint_summary).collect(),
+        ))
+    }
+
+    fn show_watchpoint(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
+        let detail = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.watchpoint_detail(trigger_id)
+        }
+        .ok_or_else(|| SwatError::new(format!("unknown watchpoint {}", trigger_id.raw())))?;
+
+        let watchpoint = detail.watchpoint;
+        let breakpoint = &watchpoint.breakpoint;
+        let mut lines = vec![
+            format!(
+                "wp={} name={}",
+                breakpoint.trigger_id.raw(),
+                breakpoint.name
+            ),
+            format!(
+                "state={} configured={} lifetime={} disposition={} activity={}",
+                breakpoint.state.label(),
+                breakpoint.configured_state.label(),
+                breakpoint.lifetime.label(),
+                breakpoint.disposition.label(),
+                breakpoint.activity.label()
+            ),
+            format!(
+                "group={} group_enabled={}",
+                breakpoint.group.as_deref().unwrap_or("-"),
+                breakpoint
+                    .group_enabled
+                    .map(|enabled| enabled.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!("value_key={}", watchpoint.value_key),
+            format!("path={}", watchpoint.path.as_deref().unwrap_or("-")),
+            format!(
+                "after_millis={}",
+                watchpoint
+                    .after_millis
+                    .map(|millis| millis.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "event_kind={}",
+                watchpoint
+                    .event_kind
+                    .map(|kind| format!("{kind:?}"))
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "summary_contains={}",
+                watchpoint.summary_contains.as_deref().unwrap_or("-")
+            ),
+            format!("actions={}", breakpoint.actions.join(",")),
+            format!("hits={}", breakpoint.hit_count),
+            format!(
+                "last_event={}",
+                breakpoint
+                    .last_hit_event_id
+                    .map(|event_id| event_id.raw().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "last_seq={}",
+                breakpoint
+                    .last_hit_sequence_no
+                    .map(|sequence_no| sequence_no.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+        ];
+        if let Some(event) = detail.last_hit_event.as_ref() {
+            lines.push(format_event_line(event));
+        }
+        Ok(CommandOutput::new(
+            format!("watchpoint {}", trigger_id.raw()),
+            lines,
+        ))
+    }
+
+    fn add_watchpoint(&mut self, spec: WatchpointSpec) -> SwatResult<CommandOutput> {
+        let persisted = persisted_watchpoint_trigger_spec(&spec);
+        let trigger_id = if let Some(session_id) = self.session_id {
+            let report = {
+                let mut api = LiveSessionApi::new(
+                    &mut self.manager,
+                    self.adapter.as_mut(),
+                    self.store.as_mut(),
+                    &mut self.trigger_engine,
+                );
+                api.add_watchpoint(session_id, spec)?
+            };
+            let trigger_id = report.value;
+            self.trigger_specs.insert(trigger_id, persisted.clone());
+            return Ok(CommandOutput::new(
+                format!("added watchpoint {}", trigger_id.raw()),
+                report
+                    .policy_events
+                    .iter()
+                    .map(format_event_line)
+                    .chain(std::iter::once(format_watchpoint_spec_line(
+                        trigger_id, &persisted,
+                    )))
+                    .collect(),
+            ));
+        } else {
+            let trigger = build_trigger_from_spec(&persisted)?;
+            let trigger_id = trigger.trigger_id;
+            self.trigger_engine.add_trigger(trigger);
+            trigger_id
+        };
+        self.trigger_specs.insert(trigger_id, persisted.clone());
+        Ok(CommandOutput::new(
+            format!("added watchpoint {}", trigger_id.raw()),
+            vec![format_watchpoint_spec_line(trigger_id, &persisted)],
+        ))
+    }
+
+    fn set_watchpoint_enabled(
+        &mut self,
+        trigger_id: TriggerId,
+        enabled: bool,
+    ) -> SwatResult<CommandOutput> {
+        ensure_watchpoint_spec(self.trigger_specs.get(&trigger_id), trigger_id)?;
+        self.set_trigger_enabled(trigger_id, enabled)
+    }
+
+    fn remove_watchpoint(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
+        ensure_watchpoint_spec(self.trigger_specs.get(&trigger_id), trigger_id)?;
+        let mut output = self.remove_trigger(trigger_id)?;
+        output.summary = output.summary.replacen("trigger", "watchpoint", 1);
+        Ok(output)
     }
 
     fn remove_trigger(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
@@ -1166,6 +1346,7 @@ impl CommandHost {
         })?;
         if file.format_version != LEGACY_TRIGGER_FILE_FORMAT_VERSION
             && file.format_version != PRE_GROUP_TRIGGER_FILE_FORMAT_VERSION
+            && file.format_version != PRE_WATCHPOINT_TRIGGER_FILE_FORMAT_VERSION
             && file.format_version != TRIGGER_FILE_FORMAT_VERSION
         {
             return Err(SwatError::new(format!(
@@ -1734,6 +1915,12 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(rest) = trimmed.strip_prefix("breakpoint ") {
         return parse_breakpoint_command(rest);
     }
+    if matches!(trimmed, "watchpoint" | "watchpoints" | "watchpoint list") {
+        return Ok(Command::Watchpoints);
+    }
+    if let Some(rest) = trimmed.strip_prefix("watchpoint ") {
+        return parse_watchpoint_command(rest);
+    }
     if trimmed == "pump" {
         return Ok(Command::Pump);
     }
@@ -2006,6 +2193,60 @@ fn parse_breakpoint_command(rest: &str) -> SwatResult<Command> {
     )))
 }
 
+fn parse_watchpoint_command(rest: &str) -> SwatResult<Command> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() || trimmed == "list" {
+        return Ok(Command::Watchpoints);
+    }
+    if let Some(rest) = trimmed.strip_prefix("show ") {
+        return Ok(Command::WatchpointShow {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "watchpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("add ") {
+        return Ok(Command::WatchpointAdd {
+            spec: parse_watchpoint_spec(rest, false)?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("once ") {
+        return Ok(Command::WatchpointAdd {
+            spec: parse_watchpoint_spec(rest, true)?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("snapshot ") {
+        return Ok(Command::WatchpointAdd {
+            spec: parse_watchpoint_snapshot_spec(rest)?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("enable ") {
+        return Ok(Command::WatchpointEnable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "watchpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("disable ") {
+        return Ok(Command::WatchpointDisable {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "watchpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("remove ") {
+        return Ok(Command::WatchpointRemove {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "watchpoint id")?),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("save ") {
+        return parse_trigger_path(rest, "watchpoint save")
+            .map(|path| Command::TriggerSave { path });
+    }
+    if let Some(rest) = trimmed.strip_prefix("load ") {
+        return parse_trigger_path(rest, "watchpoint load")
+            .map(|path| Command::TriggerLoad { path });
+    }
+
+    Err(SwatError::new(format!(
+        "unknown watchpoint command: {trimmed}"
+    )))
+}
+
 fn parse_source_show(rest: &str) -> SwatResult<Command> {
     let mut parts = rest.split_whitespace();
     let event_id = parts
@@ -2140,6 +2381,84 @@ fn parse_breakpoint_group_name(rest: &str, command: &str) -> SwatResult<String> 
         return Err(SwatError::new(format!("{command} requires a group name")));
     }
     Ok(group.to_string())
+}
+
+fn parse_watchpoint_spec(rest: &str, fire_once: bool) -> SwatResult<WatchpointSpec> {
+    let trimmed = rest.trim();
+    let Some((name, tail)) = trimmed.split_once(char::is_whitespace) else {
+        return Err(SwatError::new(
+            "watchpoint requires a name followed by a value key",
+        ));
+    };
+    let tail = tail.trim();
+    let Some((value_key, options)) = tail
+        .split_once(char::is_whitespace)
+        .map(|(value_key, options)| (value_key, options.trim()))
+        .or_else(|| (!tail.is_empty()).then_some((tail, "")))
+    else {
+        return Err(SwatError::new(
+            "watchpoint requires a name followed by a value key",
+        ));
+    };
+    let mut spec = WatchpointSpec::new(name, value_key);
+    if fire_once {
+        spec = spec.fire_once();
+    }
+    apply_watchpoint_options(spec, options)
+}
+
+fn parse_watchpoint_snapshot_spec(rest: &str) -> SwatResult<WatchpointSpec> {
+    let trimmed = rest.trim();
+    let Some((definition, reason)) = trimmed.split_once(" -- ") else {
+        return Err(SwatError::new(
+            "watchpoint snapshot requires options followed by ' -- <reason>'",
+        ));
+    };
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(SwatError::new(
+            "watchpoint snapshot requires a non-empty reason",
+        ));
+    }
+    Ok(parse_watchpoint_spec(definition, false)?.create_snapshot(reason))
+}
+
+fn apply_watchpoint_options(mut spec: WatchpointSpec, options: &str) -> SwatResult<WatchpointSpec> {
+    for token in options.split_whitespace() {
+        if let Some(group) = token.strip_prefix("group=") {
+            if group.is_empty() {
+                return Err(SwatError::new("watchpoint group cannot be empty"));
+            }
+            spec.group = Some(group.to_string());
+            continue;
+        }
+        if let Some(path) = token.strip_prefix("path=") {
+            if path.is_empty() {
+                return Err(SwatError::new("watchpoint path cannot be empty"));
+            }
+            spec.path = Some(path.to_string());
+            continue;
+        }
+        if let Some(after) = token.strip_prefix("after=") {
+            spec.after_millis = Some(parse_u64(after, "watchpoint after value")?);
+            continue;
+        }
+        if let Some(kind) = token.strip_prefix("kind=") {
+            spec.event_kind = Some(parse_event_kind(kind)?);
+            continue;
+        }
+        if let Some(summary) = token.strip_prefix("summary=") {
+            if summary.is_empty() {
+                return Err(SwatError::new("watchpoint summary cannot be empty"));
+            }
+            spec.summary_contains = Some(summary.to_string());
+            continue;
+        }
+        return Err(SwatError::new(format!(
+            "unknown watchpoint option '{token}'"
+        )));
+    }
+    Ok(spec)
 }
 
 fn parse_breakpoint_predicate_add(rest: &str) -> SwatResult<Command> {
@@ -2322,6 +2641,79 @@ fn format_breakpoint_summary(breakpoint: &BreakpointSummary) -> String {
     )
 }
 
+fn format_watchpoint_summary(watchpoint: &WatchpointSummary) -> String {
+    let breakpoint = &watchpoint.breakpoint;
+    format!(
+        "wp={} state={} configured={} lifetime={} disposition={} hits={} last_event={} last_seq={} name={}{} value_key={} path={} after={} kind={} summary={} actions={}",
+        breakpoint.trigger_id.raw(),
+        breakpoint.state.label(),
+        breakpoint.configured_state.label(),
+        breakpoint.lifetime.label(),
+        breakpoint.disposition.label(),
+        breakpoint.hit_count,
+        breakpoint
+            .last_hit_event_id
+            .map(|event_id| event_id.raw().to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        breakpoint
+            .last_hit_sequence_no
+            .map(|sequence_no| sequence_no.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        breakpoint.name,
+        breakpoint
+            .group
+            .as_ref()
+            .map(|group| format!(" group={group}"))
+            .unwrap_or_default(),
+        watchpoint.value_key,
+        watchpoint.path.as_deref().unwrap_or("-"),
+        watchpoint
+            .after_millis
+            .map(|millis| millis.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint
+            .event_kind
+            .map(|kind| format!("{kind:?}"))
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint.summary_contains.as_deref().unwrap_or("-"),
+        breakpoint.actions.join(","),
+    )
+}
+
+fn format_watchpoint_spec_line(trigger_id: TriggerId, spec: &PersistedTriggerSpec) -> String {
+    let watchpoint = spec.watchpoint.as_ref();
+    format!(
+        "watchpoint={} name={} fire_once={} enabled={} value_key={} path={} after={} kind={} summary={} actions={}{} condition={}",
+        trigger_id.raw(),
+        spec.name,
+        spec.fire_once,
+        spec.enabled,
+        watchpoint
+            .map(|watchpoint| watchpoint.value_key.as_str())
+            .unwrap_or("-"),
+        watchpoint
+            .and_then(|watchpoint| watchpoint.path.as_deref())
+            .unwrap_or("-"),
+        watchpoint
+            .and_then(|watchpoint| watchpoint.after_millis)
+            .map(|millis| millis.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint
+            .and_then(|watchpoint| watchpoint.event_kind)
+            .map(|kind| format!("{kind:?}"))
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint
+            .and_then(|watchpoint| watchpoint.summary_contains.as_deref())
+            .unwrap_or("-"),
+        format_persisted_trigger_actions(&spec.actions),
+        spec.group
+            .as_ref()
+            .map(|group| format!(" group={group}"))
+            .unwrap_or_default(),
+        format_persisted_trigger_condition(spec),
+    )
+}
+
 fn format_breakpoint_definition_group(group: &BreakpointDefinitionGroup) -> String {
     format!(
         "definition_group={} enabled={} count={}",
@@ -2481,7 +2873,8 @@ fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
 
 const LEGACY_TRIGGER_FILE_FORMAT_VERSION: u32 = 1;
 const PRE_GROUP_TRIGGER_FILE_FORMAT_VERSION: u32 = 2;
-const TRIGGER_FILE_FORMAT_VERSION: u32 = 3;
+const PRE_WATCHPOINT_TRIGGER_FILE_FORMAT_VERSION: u32 = 3;
+const TRIGGER_FILE_FORMAT_VERSION: u32 = 4;
 const UNTIL_POLL_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2541,6 +2934,8 @@ struct PersistedTriggerSpec {
     expr: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     predicate_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watchpoint: Option<PersistedWatchpointSpec>,
     fire_once: bool,
     #[serde(default = "default_trigger_enabled")]
     enabled: bool,
@@ -2548,6 +2943,19 @@ struct PersistedTriggerSpec {
     group: Option<String>,
     #[serde(default = "default_persisted_trigger_actions")]
     actions: Vec<PersistedTriggerAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedWatchpointSpec {
+    value_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_kind: Option<EventKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary_contains: Option<String>,
 }
 
 fn default_trigger_enabled() -> bool {
@@ -2597,12 +3005,32 @@ fn build_trigger_predicate(spec: &PersistedTriggerSpec) -> SwatResult<TriggerPre
     if let Some(predicate_ref) = spec.predicate_ref.as_deref() {
         return Ok(TriggerPredicate::Named(predicate_ref.to_string()));
     }
-    let expr = spec.expr.as_deref().ok_or_else(|| {
-        SwatError::new(format!(
-            "trigger {} is missing both an expression and a predicate reference",
-            spec.name
-        ))
-    })?;
+    if let Some(watchpoint) = spec.watchpoint.as_ref() {
+        let mut predicates = vec![TriggerPredicate::ValueChanged {
+            value_key: watchpoint.value_key.clone(),
+            path: watchpoint.path.clone(),
+        }];
+        if let Some(after_millis) = watchpoint.after_millis {
+            predicates.push(TriggerPredicate::ObservedAfter {
+                millis: after_millis,
+            });
+        }
+        if let Some(event_kind) = watchpoint.event_kind {
+            predicates.push(TriggerPredicate::EventKindIs(event_kind));
+        }
+        if let Some(summary_contains) = watchpoint.summary_contains.as_ref() {
+            predicates.push(TriggerPredicate::SummaryContains(summary_contains.clone()));
+        }
+        return Ok(if predicates.len() == 1 {
+            predicates.remove(0)
+        } else {
+            TriggerPredicate::All(predicates)
+        });
+    }
+    let expr = spec
+        .expr
+        .as_deref()
+        .ok_or_else(|| SwatError::new(format!("trigger {} is missing a condition", spec.name)))?;
     Ok(TriggerPredicate::Expr(parse_expression(expr)?))
 }
 
@@ -2610,8 +3038,70 @@ fn format_persisted_trigger_condition(spec: &PersistedTriggerSpec) -> String {
     spec.predicate_ref
         .as_ref()
         .map(|name| format!("@{name}"))
+        .or_else(|| {
+            spec.watchpoint
+                .as_ref()
+                .map(format_persisted_watchpoint_condition)
+        })
         .or_else(|| spec.expr.clone())
         .unwrap_or_else(|| "<missing>".to_string())
+}
+
+fn format_persisted_watchpoint_condition(watchpoint: &PersistedWatchpointSpec) -> String {
+    let mut parts = vec![format!("watch {}", watchpoint.value_key)];
+    if let Some(path) = watchpoint.path.as_deref() {
+        parts.push(format!("path={path}"));
+    }
+    if let Some(after_millis) = watchpoint.after_millis {
+        parts.push(format!("after={after_millis}"));
+    }
+    if let Some(event_kind) = watchpoint.event_kind {
+        parts.push(format!("kind={event_kind:?}"));
+    }
+    if let Some(summary_contains) = watchpoint.summary_contains.as_deref() {
+        parts.push(format!("summary={summary_contains}"));
+    }
+    parts.join(" ")
+}
+
+fn persisted_watchpoint_trigger_spec(spec: &WatchpointSpec) -> PersistedTriggerSpec {
+    PersistedTriggerSpec {
+        name: spec.name.clone(),
+        expr: None,
+        predicate_ref: None,
+        watchpoint: Some(PersistedWatchpointSpec {
+            value_key: spec.value_key.clone(),
+            path: spec.path.clone(),
+            after_millis: spec.after_millis,
+            event_kind: spec.event_kind,
+            summary_contains: spec.summary_contains.clone(),
+        }),
+        fire_once: spec.fire_once,
+        enabled: true,
+        group: spec.group.clone(),
+        actions: spec
+            .snapshot_reason
+            .as_ref()
+            .map(|reason| {
+                vec![PersistedTriggerAction::CreateSnapshot {
+                    reason: reason.clone(),
+                }]
+            })
+            .unwrap_or_else(default_persisted_trigger_actions),
+    }
+}
+
+fn ensure_watchpoint_spec(
+    spec: Option<&PersistedTriggerSpec>,
+    trigger_id: TriggerId,
+) -> SwatResult<()> {
+    match spec {
+        Some(spec) if spec.watchpoint.is_some() => Ok(()),
+        Some(_) | None => Err(SwatError::new(format!(
+            "unknown watchpoint {}",
+            trigger_id.raw()
+        ))),
+    }
 }
 
 fn payload_summary(event: &EventEnvelope) -> Option<&str> {

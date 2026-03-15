@@ -102,6 +102,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0027-supervised-continuation-runner.md`
 - `docs/adrs/0028-breakpoint-definition-groups-and-stop-reasons.md`
 - `docs/adrs/0029-stateful-watchpoint-predicates.md`
+- `docs/adrs/0030-shared-advanced-breakpoint-surfaces.md`
 
 ## Phase 1 status
 
@@ -207,8 +208,9 @@ The first script host is also now in the workspace:
 This crate provides a read-only embedded scripting surface over frozen trace
 snapshots, with helpers for summary search, artifact search, expression-backed
 queries, stack/source inspection, and file-oriented source lookup. Its live
-session wrappers now expose breakpoint, stack, and source workflows through
-the same shared `swat-api` surface used by the shell and TUI.
+session wrappers now expose grouped breakpoint predicates, breakpoint-group
+policies, value-change watchpoints, and stack/source workflows through the same
+shared `swat-api` surface used by the shell and TUI.
 
 The first API crate is also now in the workspace:
 
@@ -218,8 +220,9 @@ This crate exposes trace inspection primitives over sessions, events, decoded
 artifacts, semantic relations, source reports, snapshots, replay plans, and
 capability-gated live mutation so later human and agent clients can share the
 same substrate. Its breakpoint inspection model now includes named predicate
-inventory, user-defined breakpoint groups, and effective-versus-configured
-state reporting for grouped breakpoint policies.
+inventory, user-defined breakpoint groups, effective-versus-configured state
+reporting for grouped breakpoint policies, and first-class watchpoint
+inspection/addition helpers for value/time/lifecycle-gated state changes.
 
 The first resolver crate is also now in the workspace:
 
@@ -236,7 +239,9 @@ The first live command runtime is also now in the workspace:
 
 This crate provides a small operator shell over a live adapter/store/session,
 using the same API, resolver, and script layers that later TUI or agent clients
-will use. It now also exposes the first live semantic trigger-management path.
+will use. It now exposes debugger-grade breakpoint and watchpoint management,
+including named predicates, group policies, persisted watchpoint definitions,
+and load/time-gated watchpoint commands on the shared public API.
 
 ## Phase 4 status
 
@@ -252,14 +257,16 @@ metadata, action-aware trigger persistence, shell-level `until <expr>`, grouped
 help topics, a shared command/help registry consumed by both shell help and
 TUI discovery, first debugger-family aliases for `stack`, `source`, and
 `breakpoint`, frame-oriented stack inspection projected from boundary spans,
-session-wide source-file discovery plus direct file viewing on the shared
-source layer, status/session introspection, richer artifact rendering, source
-failure reporting, and a runnable CLI shell.
+`watchpoint` management over shared watchpoint metadata, session-wide
+source-file discovery plus direct file viewing on the shared source layer,
+status/session introspection, richer artifact rendering, source failure
+reporting, and a runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
 with an event list, stack/entity context pane, source preview, artifact preview,
 live command entry, and support for mock, local, and agent runtimes. It also
-supports a headless render mode for demos and validation.
+supports shared breakpoint/watchpoint command execution plus a headless render
+mode for demos and validation.
 
 ## Demo
 

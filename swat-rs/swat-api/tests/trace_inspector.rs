@@ -7,7 +7,7 @@ use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_api::{
     BreakpointActivity, BreakpointDisposition, BreakpointGroupKind, BreakpointLifetime,
-    BreakpointState, LiveSessionApi, TraceInspector,
+    BreakpointState, LiveSessionApi, TraceInspector, WatchpointSpec,
 };
 use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate, pump_with_triggers};
 use swat_core::{ControlAction, EventKind, EventPayload, PolicyVerdict, TriggerId};
@@ -515,6 +515,46 @@ fn live_session_api_projects_named_breakpoint_predicates_and_groups() {
         Some("search_tool")
     );
     assert_eq!(breakpoints[0].predicate, "@search_tool");
+}
+
+#[test]
+fn live_session_api_projects_watchpoint_metadata() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    let trigger_id = {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.add_watchpoint(
+            session_id,
+            WatchpointSpec::new("memory_turn", "agent.state")
+                .at_path("$.status")
+                .after_millis(250)
+                .in_event_kind(EventKind::Lifecycle)
+                .with_summary_contains("loaded")
+                .in_group("load"),
+        )
+        .unwrap()
+        .value
+    };
+
+    let api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+    let watchpoints = api.watchpoint_summaries();
+    assert_eq!(watchpoints.len(), 1);
+    assert_eq!(watchpoints[0].breakpoint.trigger_id, trigger_id);
+    assert_eq!(watchpoints[0].breakpoint.group.as_deref(), Some("load"));
+    assert_eq!(watchpoints[0].value_key, "agent.state");
+    assert_eq!(watchpoints[0].path.as_deref(), Some("$.status"));
+    assert_eq!(watchpoints[0].after_millis, Some(250));
+    assert_eq!(watchpoints[0].event_kind, Some(EventKind::Lifecycle));
+    assert_eq!(watchpoints[0].summary_contains.as_deref(), Some("loaded"));
+
+    let detail = api.watchpoint_detail(trigger_id).unwrap();
+    assert_eq!(detail.watchpoint.value_key, "agent.state");
+    assert!(detail.last_hit_event.is_none());
 }
 
 #[test]

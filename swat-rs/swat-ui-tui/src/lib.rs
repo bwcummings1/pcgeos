@@ -19,15 +19,17 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
+use swat_api::{LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec};
 use swat_command::{
-    Command, CommandSurface, command_completions, command_help, command_search, parse_command,
+    BreakpointConditionInput, Command, CommandOutput, CommandSurface, command_completions,
+    command_help, command_search, parse_command,
 };
-use swat_control::TriggerEngine;
+use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
     TargetAdapter,
 };
+use swat_expr::parse_expression;
 use swat_session::SessionManager;
 use swat_store::{FileStore, InMemoryStore, SwatStore};
 
@@ -124,6 +126,20 @@ impl LiveRuntime {
 
     fn inspector(&self) -> TraceInspector<'_, dyn SwatStore> {
         TraceInspector::new(self.store.as_ref())
+    }
+
+    fn api(&mut self) -> LiveSessionApi<'_, dyn TargetAdapter, dyn SwatStore> {
+        LiveSessionApi::new(
+            &mut self.manager,
+            self.adapter.as_mut(),
+            self.store.as_mut(),
+            &mut self.trigger_engine,
+        )
+    }
+
+    fn require_session_id(&self) -> SwatResult<SessionId> {
+        self.session_id
+            .ok_or_else(|| SwatError::new("attach a target first"))
     }
 
     fn pump(&mut self) -> SwatResult<usize> {
@@ -769,6 +785,99 @@ impl TuiApp {
                 self.manual_source = Some(ManualSourceView { lines });
                 self.push_message(format!("source view {}:{}", file, line));
             }
+            Command::Breakpoints => {
+                let output = self.list_breakpoints_output()?;
+                self.show_command_output(output);
+            }
+            Command::BreakpointShow { trigger_id } => {
+                let output = self.show_breakpoint_output(trigger_id)?;
+                self.show_command_output(output);
+            }
+            Command::BreakpointGroups => {
+                let output = self.list_breakpoint_groups_output();
+                self.show_command_output(output);
+            }
+            Command::BreakpointDefinitionGroups => {
+                let output = self.list_breakpoint_definition_groups_output();
+                self.show_command_output(output);
+            }
+            Command::BreakpointPredicates => {
+                let output = self.list_breakpoint_predicates_output();
+                self.show_command_output(output);
+            }
+            Command::BreakpointPredicateAdd { name, expr } => {
+                let output = self.add_breakpoint_predicate_output(&name, &expr)?;
+                self.show_command_output(output);
+            }
+            Command::BreakpointPredicateRemove { name } => {
+                let output = self.remove_breakpoint_predicate_output(&name)?;
+                self.show_command_output(output);
+            }
+            Command::BreakpointGroupEnable { group } => {
+                let output = self.set_breakpoint_group_enabled_output(&group, true)?;
+                self.show_command_output(output);
+            }
+            Command::BreakpointGroupDisable { group } => {
+                let output = self.set_breakpoint_group_enabled_output(&group, false)?;
+                self.show_command_output(output);
+            }
+            Command::TriggerExpr {
+                name,
+                condition,
+                fire_once,
+                group,
+            } => {
+                let output =
+                    self.add_breakpoint_output(&name, condition, fire_once, group, None)?;
+                self.show_command_output(output);
+            }
+            Command::TriggerSnapshot {
+                name,
+                condition,
+                reason,
+                group,
+            } => {
+                let output =
+                    self.add_breakpoint_output(&name, condition, false, group, Some(reason))?;
+                self.show_command_output(output);
+            }
+            Command::TriggerEnable { trigger_id } => {
+                let output = self.set_trigger_enabled_output(trigger_id, true)?;
+                self.show_command_output(output);
+            }
+            Command::TriggerDisable { trigger_id } => {
+                let output = self.set_trigger_enabled_output(trigger_id, false)?;
+                self.show_command_output(output);
+            }
+            Command::TriggerRemove { trigger_id } => {
+                let output = self.remove_trigger_output(trigger_id)?;
+                self.show_command_output(output);
+            }
+            Command::Watchpoints => {
+                let output = self.list_watchpoints_output();
+                self.show_command_output(output);
+            }
+            Command::WatchpointShow { trigger_id } => {
+                let output = self.show_watchpoint_output(trigger_id)?;
+                self.show_command_output(output);
+            }
+            Command::WatchpointAdd { spec } => {
+                let output = self.add_watchpoint_output(spec)?;
+                self.show_command_output(output);
+            }
+            Command::WatchpointEnable { trigger_id } => {
+                let output = self.set_trigger_enabled_output(trigger_id, true)?;
+                self.show_command_output(output);
+            }
+            Command::WatchpointDisable { trigger_id } => {
+                let output = self.set_trigger_enabled_output(trigger_id, false)?;
+                self.show_command_output(output);
+            }
+            Command::WatchpointRemove { trigger_id } => {
+                let mut output = self.remove_trigger_output(trigger_id)?;
+                output.summary = output.summary.replacen("trigger", "watchpoint", 1);
+                self.show_command_output(output);
+            }
             other => {
                 return Err(SwatError::new(format!(
                     "unsupported tui command '{input}' ({other:?}); use ':help' for shared discovery and the shell for shell-only workflows",
@@ -777,6 +886,430 @@ impl TuiApp {
         }
         self.clamp_selection()?;
         Ok(())
+    }
+
+    fn show_command_output(&mut self, output: CommandOutput) {
+        self.messages.clear();
+        self.push_message(output.summary);
+        for line in output
+            .lines
+            .into_iter()
+            .take(MAX_MESSAGES.saturating_sub(1))
+        {
+            self.push_message(line);
+        }
+    }
+
+    fn breakpoint_condition_label(condition: &BreakpointConditionInput) -> String {
+        match condition {
+            BreakpointConditionInput::Expression(expr) => expr.clone(),
+            BreakpointConditionInput::PredicateRef(name) => format!("@{name}"),
+        }
+    }
+
+    fn trigger_predicate_from_condition(
+        &self,
+        condition: &BreakpointConditionInput,
+    ) -> SwatResult<TriggerPredicate> {
+        match condition {
+            BreakpointConditionInput::Expression(expr) => {
+                Ok(TriggerPredicate::Expr(parse_expression(expr)?))
+            }
+            BreakpointConditionInput::PredicateRef(name) => {
+                if self.runtime.trigger_engine.predicate(name).is_none() {
+                    return Err(SwatError::new(format!(
+                        "unknown breakpoint predicate {}",
+                        name
+                    )));
+                }
+                Ok(TriggerPredicate::Named(name.clone()))
+            }
+        }
+    }
+
+    fn list_breakpoints_output(&mut self) -> SwatResult<CommandOutput> {
+        let groups = self.runtime.api().breakpoint_groups();
+        let state_groups = groups
+            .into_iter()
+            .filter(|group| group.kind == swat_api::BreakpointGroupKind::State)
+            .collect::<Vec<_>>();
+        let breakpoint_count = state_groups
+            .iter()
+            .map(|group| group.breakpoints.len())
+            .sum::<usize>();
+        let mut lines = Vec::new();
+        for group in state_groups {
+            lines.push(format!(
+                "group={} count={}",
+                group.label,
+                group.breakpoints.len()
+            ));
+            lines.extend(group.breakpoints.iter().map(format_tui_breakpoint_summary));
+        }
+        Ok(CommandOutput::new(
+            format!("{breakpoint_count} breakpoint(s)"),
+            lines,
+        ))
+    }
+
+    fn show_breakpoint_output(
+        &mut self,
+        trigger_id: swat_core::TriggerId,
+    ) -> SwatResult<CommandOutput> {
+        let detail = self
+            .runtime
+            .api()
+            .breakpoint_detail(trigger_id)
+            .ok_or_else(|| SwatError::new(format!("unknown breakpoint {}", trigger_id.raw())))?;
+        let breakpoint = detail.breakpoint;
+        let mut lines = vec![
+            format!(
+                "bp={} name={}",
+                breakpoint.trigger_id.raw(),
+                breakpoint.name
+            ),
+            format!(
+                "state={} configured={} lifetime={} disposition={} activity={}",
+                breakpoint.state.label(),
+                breakpoint.configured_state.label(),
+                breakpoint.lifetime.label(),
+                breakpoint.disposition.label(),
+                breakpoint.activity.label()
+            ),
+            format!("when={}", breakpoint.predicate),
+            format!("actions={}", breakpoint.actions.join(",")),
+            format!(
+                "group={} group_enabled={}",
+                breakpoint.group.as_deref().unwrap_or("-"),
+                breakpoint
+                    .group_enabled
+                    .map(|enabled| enabled.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!("hits={}", breakpoint.hit_count),
+        ];
+        if let Some(event) = detail.last_hit_event.as_ref() {
+            lines.push(format_event_line(event));
+        }
+        Ok(CommandOutput::new(
+            format!("breakpoint {}", trigger_id.raw()),
+            lines,
+        ))
+    }
+
+    fn list_breakpoint_groups_output(&mut self) -> CommandOutput {
+        let groups = self.runtime.api().breakpoint_groups();
+        CommandOutput::new(
+            format!("{} breakpoint group(s)", groups.len()),
+            groups
+                .iter()
+                .map(|group| {
+                    format!(
+                        "kind={} group={} count={}",
+                        group.kind.label(),
+                        group.label,
+                        group.breakpoints.len()
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn list_breakpoint_definition_groups_output(&mut self) -> CommandOutput {
+        let groups = self.runtime.api().breakpoint_definition_groups();
+        let mut lines = Vec::new();
+        for group in &groups {
+            lines.push(format!(
+                "group={} enabled={} count={}",
+                group.name,
+                group.enabled,
+                group.breakpoints.len()
+            ));
+            lines.extend(group.breakpoints.iter().map(format_tui_breakpoint_summary));
+        }
+        CommandOutput::new(format!("{} definition group(s)", groups.len()), lines)
+    }
+
+    fn list_breakpoint_predicates_output(&mut self) -> CommandOutput {
+        let predicates = self.runtime.api().breakpoint_predicates();
+        CommandOutput::new(
+            format!("{} breakpoint predicate(s)", predicates.len()),
+            predicates
+                .iter()
+                .map(|predicate| {
+                    format!(
+                        "predicate={} breakpoints={} when={}",
+                        predicate.name, predicate.breakpoint_count, predicate.predicate
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn add_breakpoint_predicate_output(
+        &mut self,
+        name: &str,
+        expr: &str,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let predicate = TriggerPredicate::Expr(parse_expression(expr)?);
+        let report = self
+            .runtime
+            .api()
+            .define_breakpoint_predicate(session_id, name, predicate)?;
+        Ok(CommandOutput::new(
+            format!("defined breakpoint predicate {name}"),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "predicate={} expr={:?}",
+                    name, expr
+                )))
+                .collect(),
+        ))
+    }
+
+    fn remove_breakpoint_predicate_output(&mut self, name: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let report = self
+            .runtime
+            .api()
+            .remove_breakpoint_predicate(session_id, name)?;
+        Ok(CommandOutput::new(
+            format!("removed breakpoint predicate {name}"),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!("predicate={}", report.value.name)))
+                .collect(),
+        ))
+    }
+
+    fn set_breakpoint_group_enabled_output(
+        &mut self,
+        group: &str,
+        enabled: bool,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let report = self
+            .runtime
+            .api()
+            .set_breakpoint_group_enabled(session_id, group, enabled)?;
+        Ok(CommandOutput::new(
+            format!(
+                "{} breakpoint group {}",
+                if enabled { "enabled" } else { "disabled" },
+                group
+            ),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "group={} previous_enabled={} enabled={}",
+                    group, report.value, enabled
+                )))
+                .collect(),
+        ))
+    }
+
+    fn add_breakpoint_output(
+        &mut self,
+        name: &str,
+        condition: BreakpointConditionInput,
+        fire_once: bool,
+        group: Option<String>,
+        snapshot_reason: Option<String>,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let predicate = self.trigger_predicate_from_condition(&condition)?;
+        let actions = snapshot_reason
+            .as_ref()
+            .map(|reason| {
+                vec![TriggerAction::CreateSnapshot {
+                    reason: reason.clone(),
+                }]
+            })
+            .unwrap_or_else(|| vec![TriggerAction::PauseTarget]);
+        let mut trigger = Trigger::new(name, predicate, actions);
+        if fire_once {
+            trigger = trigger.fire_once();
+        }
+        if let Some(group) = group.as_deref() {
+            trigger = trigger.in_group(group);
+        }
+        let report = self.runtime.api().add_trigger(session_id, trigger)?;
+        Ok(CommandOutput::new(
+            format!("added breakpoint {}", report.value.raw()),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "breakpoint={} name={} fire_once={}{} condition={}",
+                    report.value.raw(),
+                    name,
+                    fire_once,
+                    group
+                        .as_ref()
+                        .map(|group| format!(" group={group}"))
+                        .unwrap_or_default(),
+                    Self::breakpoint_condition_label(&condition)
+                )))
+                .collect(),
+        ))
+    }
+
+    fn set_trigger_enabled_output(
+        &mut self,
+        trigger_id: swat_core::TriggerId,
+        enabled: bool,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let report = self
+            .runtime
+            .api()
+            .set_trigger_enabled(session_id, trigger_id, enabled)?;
+        Ok(CommandOutput::new(
+            format!(
+                "{} trigger {}",
+                if enabled { "enabled" } else { "disabled" },
+                trigger_id.raw()
+            ),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "trigger={} previous_enabled={} enabled={}",
+                    trigger_id.raw(),
+                    report.value,
+                    enabled
+                )))
+                .collect(),
+        ))
+    }
+
+    fn remove_trigger_output(
+        &mut self,
+        trigger_id: swat_core::TriggerId,
+    ) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let report = self.runtime.api().remove_trigger(session_id, trigger_id)?;
+        Ok(CommandOutput::new(
+            format!("removed trigger {}", trigger_id.raw()),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!("name={}", report.value.name)))
+                .collect(),
+        ))
+    }
+
+    fn list_watchpoints_output(&mut self) -> CommandOutput {
+        let watchpoints = self.runtime.api().watchpoint_summaries();
+        CommandOutput::new(
+            format!("{} watchpoint(s)", watchpoints.len()),
+            watchpoints
+                .iter()
+                .map(format_tui_watchpoint_summary)
+                .collect(),
+        )
+    }
+
+    fn show_watchpoint_output(
+        &mut self,
+        trigger_id: swat_core::TriggerId,
+    ) -> SwatResult<CommandOutput> {
+        let detail = self
+            .runtime
+            .api()
+            .watchpoint_detail(trigger_id)
+            .ok_or_else(|| SwatError::new(format!("unknown watchpoint {}", trigger_id.raw())))?;
+        let watchpoint = detail.watchpoint;
+        let breakpoint = &watchpoint.breakpoint;
+        let mut lines = vec![
+            format!(
+                "wp={} name={}",
+                breakpoint.trigger_id.raw(),
+                breakpoint.name
+            ),
+            format!(
+                "state={} configured={} lifetime={} disposition={} activity={}",
+                breakpoint.state.label(),
+                breakpoint.configured_state.label(),
+                breakpoint.lifetime.label(),
+                breakpoint.disposition.label(),
+                breakpoint.activity.label()
+            ),
+            format!("value_key={}", watchpoint.value_key),
+            format!("path={}", watchpoint.path.as_deref().unwrap_or("-")),
+            format!(
+                "after={}",
+                watchpoint
+                    .after_millis
+                    .map(|millis| millis.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "kind={}",
+                watchpoint
+                    .event_kind
+                    .map(|kind| format!("{kind:?}"))
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "summary={}",
+                watchpoint.summary_contains.as_deref().unwrap_or("-")
+            ),
+            format!("actions={}", breakpoint.actions.join(",")),
+        ];
+        if let Some(event) = detail.last_hit_event.as_ref() {
+            lines.push(format_event_line(event));
+        }
+        Ok(CommandOutput::new(
+            format!("watchpoint {}", trigger_id.raw()),
+            lines,
+        ))
+    }
+
+    fn add_watchpoint_output(&mut self, spec: WatchpointSpec) -> SwatResult<CommandOutput> {
+        let session_id = self.runtime.require_session_id()?;
+        let report = self
+            .runtime
+            .api()
+            .add_watchpoint(session_id, spec.clone())?;
+        Ok(CommandOutput::new(
+            format!("added watchpoint {}", report.value.raw()),
+            report
+                .policy_events
+                .iter()
+                .map(format_event_line)
+                .chain(std::iter::once(format!(
+                    "watchpoint={} name={} value_key={} path={} after={} kind={} summary={}{} fire_once={}",
+                    report.value.raw(),
+                    spec.name,
+                    spec.value_key,
+                    spec.path.as_deref().unwrap_or("-"),
+                    spec.after_millis
+                        .map(|millis| millis.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    spec.event_kind
+                        .map(|kind| format!("{kind:?}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    spec.summary_contains.as_deref().unwrap_or("-"),
+                    spec.group
+                        .as_ref()
+                        .map(|group| format!(" group={group}"))
+                        .unwrap_or_default(),
+                    spec.fire_once
+                )))
+                .collect(),
+        ))
     }
 
     fn show_help(&mut self, topic: Option<&str>) {
@@ -1083,6 +1616,50 @@ fn format_event_line(event: &EventEnvelope) -> String {
     )
 }
 
+fn format_tui_breakpoint_summary(breakpoint: &swat_api::BreakpointSummary) -> String {
+    format!(
+        "bp={} state={} hits={} name={}{} predicate={} actions={}",
+        breakpoint.trigger_id.raw(),
+        breakpoint.state.label(),
+        breakpoint.hit_count,
+        breakpoint.name,
+        breakpoint
+            .group
+            .as_ref()
+            .map(|group| format!(" group={group}"))
+            .unwrap_or_default(),
+        breakpoint.predicate_name.as_deref().unwrap_or("inline"),
+        breakpoint.actions.join(","),
+    )
+}
+
+fn format_tui_watchpoint_summary(watchpoint: &swat_api::WatchpointSummary) -> String {
+    let breakpoint = &watchpoint.breakpoint;
+    format!(
+        "wp={} state={} hits={} name={}{} value_key={} path={} after={} kind={} summary={}",
+        breakpoint.trigger_id.raw(),
+        breakpoint.state.label(),
+        breakpoint.hit_count,
+        breakpoint.name,
+        breakpoint
+            .group
+            .as_ref()
+            .map(|group| format!(" group={group}"))
+            .unwrap_or_default(),
+        watchpoint.value_key,
+        watchpoint.path.as_deref().unwrap_or("-"),
+        watchpoint
+            .after_millis
+            .map(|millis| millis.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint
+            .event_kind
+            .map(|kind| format!("{kind:?}"))
+            .unwrap_or_else(|| "-".to_string()),
+        watchpoint.summary_contains.as_deref().unwrap_or("-"),
+    )
+}
+
 fn payload_summary(event: &EventEnvelope) -> String {
     match &event.payload {
         swat_core::EventPayload::Empty => "<empty>".to_string(),
@@ -1152,13 +1729,63 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("semantic breakpoints"))
         );
-        assert!(app.messages.iter().any(|line| line.contains("[shell]")));
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("breakpoint list"))
+        );
 
         app.execute_command("stack").unwrap();
         assert!(
             app.messages
                 .iter()
                 .any(|line| line.contains("stack frames="))
+        );
+    }
+
+    #[test]
+    fn tui_command_entry_can_manage_breakpoints_and_watchpoints() {
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::Mock)).unwrap();
+        app.attach().unwrap();
+
+        app.execute_command(
+            r#"breakpoint predicate add search_tool kind == ModelBoundary and artifact.json $.tool == "search""#,
+        )
+        .unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("defined breakpoint predicate search_tool"))
+        );
+
+        app.execute_command("breakpoint add pause_search group=search @search_tool")
+            .unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("added breakpoint"))
+        );
+
+        app.execute_command(
+            "watchpoint add cache_turn agent.state after=25 kind=Lifecycle summary=loaded",
+        )
+        .unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("added watchpoint"))
+        );
+
+        app.execute_command("watchpoint list").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("watchpoint(s)"))
+        );
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("value_key=agent.state"))
         );
     }
 

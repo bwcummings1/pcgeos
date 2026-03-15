@@ -99,7 +99,7 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         search
             .lines
             .iter()
-            .any(|line| line.contains("breakpoint list [shell]"))
+            .any(|line| line.contains("breakpoint list"))
     );
 
     let completions = command_completions("help br", CommandSurface::Shell);
@@ -193,6 +193,39 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         parse_command("breakpoint disable 9").unwrap(),
         Command::TriggerDisable {
             trigger_id: swat_core::TriggerId::from_raw(9),
+        }
+    );
+    assert_eq!(
+        parse_command("watchpoint list").unwrap(),
+        Command::Watchpoints
+    );
+    assert_eq!(
+        parse_command("watchpoint show 11").unwrap(),
+        Command::WatchpointShow {
+            trigger_id: swat_core::TriggerId::from_raw(11),
+        }
+    );
+    assert_eq!(
+        parse_command(
+            "watchpoint add cache_turn agent.state path=$.status after=250 kind=Lifecycle summary=loaded group=load",
+        )
+        .unwrap(),
+        Command::WatchpointAdd {
+            spec: swat_api::WatchpointSpec::new("cache_turn", "agent.state")
+                .at_path("$.status")
+                .after_millis(250)
+                .in_event_kind(swat_core::EventKind::Lifecycle)
+                .with_summary_contains("loaded")
+                .in_group("load"),
+        }
+    );
+    assert_eq!(
+        parse_command("watchpoint snapshot cache_turn agent.state after=25 -- state changed")
+            .unwrap(),
+        Command::WatchpointAdd {
+            spec: swat_api::WatchpointSpec::new("cache_turn", "agent.state")
+                .after_millis(25)
+                .create_snapshot("state changed"),
         }
     );
 }
@@ -353,6 +386,90 @@ fn command_host_can_manage_named_breakpoint_predicates_and_groups() {
 }
 
 #[test]
+fn command_host_can_manage_watchpoints_and_persist_them() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+    let added = host
+        .execute(
+            "watchpoint add cache_turn agent.state path=$.status after=250 kind=Lifecycle summary=loaded group=load",
+        )
+        .unwrap();
+    assert!(added.summary.contains("added watchpoint"));
+    assert!(
+        added
+            .lines
+            .iter()
+            .any(|line| line.contains("value_key=agent.state"))
+    );
+
+    let listed = host.execute("watchpoint list").unwrap();
+    let watchpoint_line = listed
+        .lines
+        .iter()
+        .find(|line| line.starts_with("wp="))
+        .unwrap()
+        .to_string();
+    assert!(watchpoint_line.contains("value_key=agent.state"));
+    assert!(watchpoint_line.contains("path=$.status"));
+    assert!(watchpoint_line.contains("after=250"));
+    assert!(watchpoint_line.contains("kind=Lifecycle"));
+    assert!(watchpoint_line.contains("summary=loaded"));
+
+    let trigger_id = watchpoint_line
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("wp="))
+        .unwrap()
+        .to_string();
+    let shown = host
+        .execute(&format!("watchpoint show {trigger_id}"))
+        .unwrap();
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line == "value_key=agent.state")
+    );
+    assert!(shown.lines.iter().any(|line| line == "path=$.status"));
+
+    let path = std::env::temp_dir().join(format!(
+        "swat-watchpoint-{}-{}.json",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    host.execute(&format!("watchpoint save {}", path.display()))
+        .unwrap();
+
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("\"watchpoint\""));
+    assert!(saved.contains("\"value_key\": \"agent.state\""));
+
+    let mut reloaded = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+    reloaded.execute("attach").unwrap();
+    reloaded
+        .execute(&format!("watchpoint load {}", path.display()))
+        .unwrap();
+    let reloaded_list = reloaded.execute("watchpoint list").unwrap();
+    assert!(
+        reloaded_list
+            .lines
+            .iter()
+            .any(|line| line.contains("value_key=agent.state"))
+    );
+
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn command_host_can_toggle_trigger_enabled_state() {
     let mut host = CommandHost::new(
         Box::new(MockAdapter::default()),
@@ -444,7 +561,7 @@ fn command_host_can_save_and_restore_trigger_sets() {
     assert!(saved.summary.contains("saved 1 trigger"));
     let persisted = fs::read_to_string(&path).unwrap();
     assert!(persisted.contains("snapshot_search"));
-    assert!(persisted.contains(r#""format_version": 3"#));
+    assert!(persisted.contains(r#""format_version": 4"#));
     assert!(persisted.contains(r#""kind": "create_snapshot""#));
     assert!(persisted.contains(r#""enabled": false"#));
 

@@ -161,6 +161,63 @@ fn live_script_session_uses_public_mutation_api() {
     assert_eq!(live.enable_trigger(trigger_id).unwrap(), false);
     assert_eq!(live.breakpoint_enabled_count(), 1);
 
+    assert!(
+        !live
+            .define_breakpoint_predicate(
+                "search_tool",
+                r#"kind == ModelBoundary and artifact.json $.tool == "search""#,
+            )
+            .unwrap()
+    );
+    assert_eq!(live.breakpoint_predicate_count(), 1);
+    assert_eq!(
+        live.breakpoint_predicate_breakpoint_count("search_tool")
+            .unwrap(),
+        0
+    );
+
+    let grouped_id = live
+        .add_trigger_expr(
+            "grouped_search",
+            r#"kind == ModelBoundary and artifact.json $.tool == "search""#,
+            false,
+        )
+        .unwrap();
+    assert_eq!(live.breakpoint_definition_group_count(), 0);
+    assert!(
+        live.remove_trigger(grouped_id)
+            .unwrap()
+            .contains("grouped_search")
+    );
+
+    let watchpoint_id = live
+        .add_watchpoint_with_scope(
+            "memory_turn",
+            "agent.state",
+            "$.status",
+            250,
+            "Lifecycle",
+            "loaded",
+            true,
+            "load",
+        )
+        .unwrap();
+    assert_eq!(live.watchpoint_count(), 1);
+    assert_eq!(live.watchpoint_hit_count(watchpoint_id).unwrap(), 0);
+    assert_eq!(live.breakpoint_definition_group_count(), 1);
+    assert_eq!(live.breakpoint_definition_group_size("load"), 1);
+    assert!(live.breakpoint_definition_group_enabled("load").unwrap());
+    assert_eq!(
+        live.set_breakpoint_group_enabled("load", false).unwrap(),
+        true
+    );
+    assert!(!live.breakpoint_definition_group_enabled("load").unwrap());
+    assert_eq!(
+        live.set_breakpoint_group_enabled("load", true).unwrap(),
+        false
+    );
+    assert!(live.breakpoint_definition_group_enabled("load").unwrap());
+
     live.pump_once().unwrap();
     live.pump_once().unwrap();
     assert_eq!(live.stack_frame_count().unwrap(), 1);
@@ -172,6 +229,12 @@ fn live_script_session_uses_public_mutation_api() {
             .unwrap(),
         1
     );
+    assert_eq!(
+        live.remove_breakpoint_predicate("search_tool").unwrap(),
+        "search_tool"
+    );
+    assert_eq!(live.breakpoint_predicate_count(), 0);
+    assert_eq!(live.remove_trigger(watchpoint_id).unwrap(), "memory_turn");
     assert_eq!(live.remove_trigger(trigger_id).unwrap(), "pause_search");
     assert_eq!(live.trigger_count(), 0);
 }
