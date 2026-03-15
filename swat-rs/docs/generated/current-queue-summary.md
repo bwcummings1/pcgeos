@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `20/21 done`
-- Pending: `1`
+- Progress: `21/21 done`
+- Pending: `0`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -31,7 +31,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-018 | done | M6 | swat-rs-full-completion-plan | 36eea65b |
 | T-019 | done | M6 | swat-rs-full-completion-plan | f39efc6a |
 | T-020 | done | M7 | swat-rs-full-completion-plan | 4e5045cb |
-| T-021 | pending | M8 | - | - |
+| T-021 | done | M8 | swat-rs-full-completion-plan | 8c6fe2db |
 
 ## Task Notes
 
@@ -57,4 +57,4 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-018 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | `swat-adapter-pcgeos` now provides a fixture-first PC/GEOS adapter over real manifests/symbol VMs, and `swat-replay` now replays any boundary-payload event rather than only model/tool kinds. |
 | T-019 | Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos. | Shared API, shell, and TUI flows now expose PC/GEOS registers, memory snapshots, stack frames, patient/handle/resource/object views, and real source navigation over the fixture adapter. |
 | T-020 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | Shared `dashboard`/`history` workflows now drive persisted shell/TUI history, switchable execution/control/target dashboards, replay and breakpoint panes, and larger-session navigation without bypassing shared command metadata. |
-| T-021 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | This is the final closeout gate, not a cosmetic polish task. |
+| T-021 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | Added reproducible full-validation and PC/GEOS demo scripts, closed the architecture/docs/ADR handoff, and refreshed the continuation prompt for maintenance from a clean completion checkpoint. |

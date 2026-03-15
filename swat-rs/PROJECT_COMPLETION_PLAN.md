@@ -103,7 +103,7 @@ Execution rules:
 | T-018 | done | M6 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | swat-rs-full-completion-plan | 36eea65b | `swat-adapter-pcgeos` now provides a fixture-first PC/GEOS adapter over real manifests/symbol VMs, and `swat-replay` now replays any boundary-payload event rather than only model/tool kinds. |
 | T-019 | done | M6 | Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos. | swat-rs-full-completion-plan | f39efc6a | Shared API, shell, and TUI flows now expose PC/GEOS registers, memory snapshots, stack frames, patient/handle/resource/object views, and real source navigation over the fixture adapter. |
 | T-020 | done | M7 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | swat-rs-full-completion-plan | 4e5045cb | Shared `dashboard`/`history` workflows now drive persisted shell/TUI history, switchable execution/control/target dashboards, replay and breakpoint panes, and larger-session navigation without bypassing shared command metadata. |
-| T-021 | pending | M8 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | - | - | This is the final closeout gate, not a cosmetic polish task. |
+| T-021 | done | M8 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | swat-rs-full-completion-plan | 8c6fe2db | Added reproducible full-validation and PC/GEOS demo scripts, closed the architecture/docs/ADR handoff, and refreshed the continuation prompt for maintenance from a clean completion checkpoint. |
 
 ## Canonical reference set
 
@@ -649,8 +649,9 @@ Repeat this loop until the `Definition of Done` above is satisfied:
 
 ## Immediate next task
 
-Resume with the first `pending` task in the active queue and begin with the
-highest-value coherent slice under that task.
+The active queue is complete. Preserve this clean checkpoint for maintenance or
+explicit extension work, and reopen the queue only if new requirements add more
+tasks beyond the completed Definition of Done.
 
 For unattended runs, use:
 

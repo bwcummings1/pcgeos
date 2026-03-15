@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 20,
-    "pending": 1,
+    "done": 21,
+    "pending": 0,
     "blocked": 0
   },
   "tasks": [
@@ -191,12 +191,12 @@
     },
     {
       "task": "T-021",
-      "status": "pending",
+      "status": "done",
       "milestone": "M8",
       "description": "Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "This is the final closeout gate, not a cosmetic polish task."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "8c6fe2db",
+      "notes": "Added reproducible full-validation and PC/GEOS demo scripts, closed the architecture/docs/ADR handoff, and refreshed the continuation prompt for maintenance from a clean completion checkpoint."
     }
   ]
 }
