@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `12/21 done`
-- Pending: `9`
+- Progress: `13/21 done`
+- Pending: `8`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -23,7 +23,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-010 | done | M2 | swat-rs-full-completion-plan | a89bb7fd |
 | T-011 | done | M3 | swat-rs-full-completion-plan | 6a370bc4 |
 | T-012 | done | M3 | swat-rs-full-completion-plan | 39e68bfb |
-| T-013 | pending | M3 | - | - |
+| T-013 | done | M3 | swat-rs-full-completion-plan | 7275b0ca |
 | T-014 | pending | M4 | - | - |
 | T-015 | pending | M4 | - | - |
 | T-016 | pending | M5 | - | - |
@@ -49,7 +49,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-010 | Expose advanced breakpoint/watchpoint management across shell, TUI, script, and public API. | `swat-api` now projects typed watchpoint specs/details, shell and TUI share live breakpoint/watchpoint management, `swat-script` wraps the same mutation surface, and trigger persistence v4 preserves watchpoints. |
 | T-011 | Add typed frame/local/register inspection primitives for modern targets and shared APIs. | `swat-api` now projects typed frame inspections with locals/registers from structured modern-target artifacts, shell and TUI expose `stack locals` / `stack registers`, and `swat-script` wraps the same frame-binding model. |
 | T-012 | Add typed patient/handle/resource/object inspection models and debugger-native presentations. | Shared value/resolver/API layers now project typed patient/handle/resource/object models, and shell/TUI/script surfaces expose debugger-native inspection without changing `swat-core`. |
-| T-013 | Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries. | Preserve operator-friendly formatting across shell and TUI. |
+| T-013 | Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries. | Query fields now cover typed target entities and source lines, shared APIs project value history and source-function traversal, and shell/TUI/script surfaces expose the same debugger-native workflows. |
 | T-014 | Add package-oriented script loading and shared command metadata integration. | Recover conceptual autoload parity without recreating Tcl chaos. |
 | T-015 | Migrate the highest-value legacy Tcl command families onto the new runtime and help surface. | Focus on stack/patient/process/object/source helpers first. |
 | T-016 | Implement PC/GEOS VM, symbol, geode, and object format readers or bridges. | Fixture-backed first if live target automation is fragile. |

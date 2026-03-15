@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 12,
-    "pending": 9,
+    "done": 13,
+    "pending": 8,
     "blocked": 0
   },
   "tasks": [
@@ -119,12 +119,12 @@
     },
     {
       "task": "T-013",
-      "status": "pending",
+      "status": "done",
       "milestone": "M3",
       "description": "Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Preserve operator-friendly formatting across shell and TUI."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "7275b0ca",
+      "notes": "Query fields now cover typed target entities and source lines, shared APIs project value history and source-function traversal, and shell/TUI/script surfaces expose the same debugger-native workflows."
     },
     {
       "task": "T-014",
