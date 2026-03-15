@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 
+mod repository;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use swat_core::{SwatError, SwatResult};
+
+pub use repository::*;
 
 const GEOS_V1_SIGNATURE: [u8; 4] = [b'G' | 0x80, b'E', b'O' | 0x80, b'S'];
 const GEOS_V2_SIGNATURE: [u8; 4] = [b'G' | 0x80, b'E', b'A' | 0x80, b'S'];
@@ -498,13 +502,21 @@ pub struct PcGeosStringTable {
 
 impl PcGeosStringTable {
     pub fn from_vm(vm: &VmFile, table_handle: u16) -> SwatResult<Self> {
+        Self::from_vm_with_byte_order(vm, table_handle, PcGeosByteOrder::Little)
+    }
+
+    pub fn from_vm_with_byte_order(
+        vm: &VmFile,
+        table_handle: u16,
+        byte_order: PcGeosByteOrder,
+    ) -> SwatResult<Self> {
         let table_bytes = vm.block_bytes(table_handle)?;
         ensure_len(table_bytes, ST_HEADER_LEN, "PC/GEOS string table header")?;
 
         let mut entries = BTreeMap::new();
         for bucket_index in 0..ST_BUCKET_COUNT {
             let offset = bucket_index * 2;
-            let chain_handle = read_u16_le(table_bytes, offset)?;
+            let chain_handle = read_u16(table_bytes, offset, byte_order)?;
             if chain_handle == 0 {
                 continue;
             }
@@ -514,7 +526,7 @@ impl PcGeosStringTable {
                 2,
                 &format!("PC/GEOS string-table chain block {chain_handle:#06x}"),
             )?;
-            let limit = usize::from(read_u16_le(chain_bytes, 0)?);
+            let limit = usize::from(read_u16(chain_bytes, 0, byte_order)?);
             let mut cursor = 2usize;
             while cursor < limit {
                 ensure_len(
@@ -522,8 +534,8 @@ impl PcGeosStringTable {
                     cursor + 4,
                     &format!("PC/GEOS string-table record {chain_handle:#06x}:{cursor:#06x}"),
                 )?;
-                let hash = read_u16_le(chain_bytes, cursor)?;
-                let length = usize::from(read_u16_le(chain_bytes, cursor + 2)?);
+                let hash = read_u16(chain_bytes, cursor, byte_order)?;
+                let length = usize::from(read_u16(chain_bytes, cursor + 2, byte_order)?);
                 let string_start = cursor + 4;
                 let raw = slice(
                     chain_bytes,
@@ -570,7 +582,7 @@ impl PcGeosStringTable {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Endian {
+pub enum PcGeosByteOrder {
     Little,
     Big,
 }
@@ -672,6 +684,7 @@ impl ObjGroupDescriptor {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObjHeader {
+    pub byte_order: PcGeosByteOrder,
     pub version: ObjFormatVersion,
     pub strings: u16,
     pub source_map: u16,
@@ -685,21 +698,21 @@ pub struct ObjHeader {
 impl ObjHeader {
     pub fn parse(bytes: &[u8]) -> SwatResult<Self> {
         ensure_len(bytes, OBJ_HEADER_PREFIX_LEN, "PC/GEOS object header")?;
-        let (endian, version) = detect_obj_format(bytes)?;
-        let num_segments = read_u16(bytes, 2, endian)?;
-        let num_groups = read_u16(bytes, 4, endian)?;
-        let strings = read_u16(bytes, 6, endian)?;
-        let source_map = read_u16(bytes, 8, endian)?;
-        let entry = parse_obj_relocation(bytes, 10, endian)?;
+        let (byte_order, version) = detect_obj_format(bytes)?;
+        let num_segments = read_u16(bytes, 2, byte_order)?;
+        let num_groups = read_u16(bytes, 4, byte_order)?;
+        let strings = read_u16(bytes, 6, byte_order)?;
+        let source_map = read_u16(bytes, 8, byte_order)?;
+        let entry = parse_obj_relocation(bytes, 10, byte_order)?;
         let revision = ReleaseNumber {
-            major: read_u16(bytes, 20, endian)?,
-            minor: read_u16(bytes, 22, endian)?,
-            change: read_u16(bytes, 24, endian)?,
-            engineering: read_u16(bytes, 26, endian)?,
+            major: read_u16(bytes, 20, byte_order)?,
+            minor: read_u16(bytes, 22, byte_order)?,
+            change: read_u16(bytes, 24, byte_order)?,
+            engineering: read_u16(bytes, 26, byte_order)?,
         };
         let protocol = ProtocolNumber {
-            major: read_u16(bytes, 28, endian)?,
-            minor: read_u16(bytes, 30, endian)?,
+            major: read_u16(bytes, 28, byte_order)?,
+            minor: read_u16(bytes, 30, byte_order)?,
         };
 
         let mut cursor = OBJ_HEADER_PREFIX_LEN;
@@ -710,21 +723,22 @@ impl ObjHeader {
                 cursor + OBJ_SEGMENT_LEN,
                 &format!("PC/GEOS object segment descriptor {index}"),
             )?;
-            let bitfield = read_u16(bytes, cursor + 8, endian)?;
+            let (align, segment_type, flags) =
+                parse_obj_segment_layout(bytes, cursor + 8, byte_order)?;
             segments.push(ObjSegmentDescriptor {
                 descriptor_offset: cursor as u16,
-                name_id: read_u32(bytes, cursor, endian)?,
-                class_id: read_u32(bytes, cursor + 4, endian)?,
-                align: (bitfield & 0xff) as u8,
-                segment_type: ObjSegmentType::from_raw(((bitfield >> 8) & 0x0f) as u8),
-                flags: ((bitfield >> 12) & 0x0f) as u8,
-                data: read_u16(bytes, cursor + 10, endian)?,
-                size: read_u16(bytes, cursor + 12, endian)?,
-                relocations: read_u16(bytes, cursor + 14, endian)?,
-                symbols: read_u16(bytes, cursor + 16, endian)?,
-                symbol_toc: read_u16(bytes, cursor + 18, endian)?,
-                addr_map: read_u16(bytes, cursor + 20, endian)?,
-                lines: read_u16(bytes, cursor + 22, endian)?,
+                name_id: read_u32(bytes, cursor, byte_order)?,
+                class_id: read_u32(bytes, cursor + 4, byte_order)?,
+                align,
+                segment_type: ObjSegmentType::from_raw(segment_type),
+                flags,
+                data: read_u16(bytes, cursor + 10, byte_order)?,
+                size: read_u16(bytes, cursor + 12, byte_order)?,
+                relocations: read_u16(bytes, cursor + 14, byte_order)?,
+                symbols: read_u16(bytes, cursor + 16, byte_order)?,
+                symbol_toc: read_u16(bytes, cursor + 18, byte_order)?,
+                addr_map: read_u16(bytes, cursor + 20, byte_order)?,
+                lines: read_u16(bytes, cursor + 22, byte_order)?,
             });
             cursor += OBJ_SEGMENT_LEN;
         }
@@ -736,7 +750,7 @@ impl ObjHeader {
                 cursor + 8,
                 &format!("PC/GEOS object group descriptor {index}"),
             )?;
-            let num_group_segments = usize::from(read_u16(bytes, cursor + 4, endian)?);
+            let num_group_segments = usize::from(read_u16(bytes, cursor + 4, byte_order)?);
             let raw_group_len = 8 + num_group_segments * 2;
             let aligned_group_len = (raw_group_len + 3) & !3;
             ensure_len(
@@ -746,16 +760,17 @@ impl ObjHeader {
             )?;
             let mut segment_offsets = Vec::with_capacity(num_group_segments);
             for seg_index in 0..num_group_segments {
-                segment_offsets.push(read_u16(bytes, cursor + 8 + (seg_index * 2), endian)?);
+                segment_offsets.push(read_u16(bytes, cursor + 8 + (seg_index * 2), byte_order)?);
             }
             groups.push(ObjGroupDescriptor {
-                name_id: read_u32(bytes, cursor, endian)?,
+                name_id: read_u32(bytes, cursor, byte_order)?,
                 segment_offsets,
             });
             cursor += aligned_group_len;
         }
 
         Ok(Self {
+            byte_order,
             version,
             strings,
             source_map,
@@ -834,7 +849,8 @@ impl PcGeosSymbolVmFile {
     pub fn parse(bytes: Vec<u8>) -> SwatResult<Self> {
         let vm = VmFile::parse(bytes)?;
         let header = ObjHeader::parse_vm_map(&vm)?;
-        let strings = vm.string_table(header.strings)?;
+        let strings =
+            PcGeosStringTable::from_vm_with_byte_order(&vm, header.strings, header.byte_order)?;
         Ok(Self {
             vm,
             header,
@@ -867,7 +883,7 @@ impl PcGeosSymbolVmFile {
 
         let mut maps = Vec::new();
         for chain_index in 0..chain_count {
-            let mut chain_handle = read_u16_le(header_bytes, chain_index * 2)?;
+            let mut chain_handle = read_u16(header_bytes, chain_index * 2, self.header.byte_order)?;
             while chain_handle != 0 {
                 let chain_bytes = self.vm.block_bytes(chain_handle)?;
                 ensure_len(
@@ -875,8 +891,8 @@ impl PcGeosSymbolVmFile {
                     4,
                     &format!("PC/GEOS source-map hash block {chain_handle:#06x}"),
                 )?;
-                let next = read_u16_le(chain_bytes, 0)?;
-                let next_entry = usize::from(read_u16_le(chain_bytes, 2)?);
+                let next = read_u16(chain_bytes, 0, self.header.byte_order)?;
+                let next_entry = usize::from(read_u16(chain_bytes, 2, self.header.byte_order)?);
                 ensure_len(
                     chain_bytes,
                     4 + next_entry * 8,
@@ -884,9 +900,11 @@ impl PcGeosSymbolVmFile {
                 )?;
                 for entry_index in 0..next_entry {
                     let entry_offset = 4 + (entry_index * 8);
-                    let file_id = read_u32_le(chain_bytes, entry_offset)?;
-                    let mapping_offset = read_u16_le(chain_bytes, entry_offset + 4)?;
-                    let mapping_block = read_u16_le(chain_bytes, entry_offset + 6)?;
+                    let file_id = read_u32(chain_bytes, entry_offset, self.header.byte_order)?;
+                    let mapping_offset =
+                        read_u16(chain_bytes, entry_offset + 4, self.header.byte_order)?;
+                    let mapping_block =
+                        read_u16(chain_bytes, entry_offset + 6, self.header.byte_order)?;
                     let mapping_bytes = self.vm.block_bytes(mapping_block)?;
                     ensure_len(
                         mapping_bytes,
@@ -895,8 +913,11 @@ impl PcGeosSymbolVmFile {
                             "PC/GEOS source-map payload {mapping_block:#06x}:{mapping_offset:#06x}"
                         ),
                     )?;
-                    let count =
-                        usize::from(read_u16_le(mapping_bytes, usize::from(mapping_offset))?);
+                    let count = usize::from(read_u16(
+                        mapping_bytes,
+                        usize::from(mapping_offset),
+                        self.header.byte_order,
+                    )?);
                     ensure_len(
                         mapping_bytes,
                         usize::from(mapping_offset) + 2 + count * 6,
@@ -908,9 +929,13 @@ impl PcGeosSymbolVmFile {
                     let mut cursor = usize::from(mapping_offset) + 2;
                     for _ in 0..count {
                         entries.push(ObjSourceMapEntry {
-                            line: read_u16_le(mapping_bytes, cursor)?,
-                            offset: read_u16_le(mapping_bytes, cursor + 2)?,
-                            segment_offset: read_u16_le(mapping_bytes, cursor + 4)?,
+                            line: read_u16(mapping_bytes, cursor, self.header.byte_order)?,
+                            offset: read_u16(mapping_bytes, cursor + 2, self.header.byte_order)?,
+                            segment_offset: read_u16(
+                                mapping_bytes,
+                                cursor + 4,
+                                self.header.byte_order,
+                            )?,
                         });
                         cursor += 6;
                     }
@@ -939,7 +964,7 @@ impl PcGeosSymbolVmFile {
 
         let addr_map_bytes = self.vm.block_bytes(segment.lines)?;
         ensure_len(addr_map_bytes, 2, "PC/GEOS line address-map header")?;
-        let entry_count = usize::from(read_u16_le(addr_map_bytes, 0)?);
+        let entry_count = usize::from(read_u16(addr_map_bytes, 0, self.header.byte_order)?);
         ensure_len(
             addr_map_bytes,
             2 + entry_count * 4,
@@ -949,10 +974,10 @@ impl PcGeosSymbolVmFile {
         let mut records = Vec::new();
         for index in 0..entry_count {
             let entry_offset = 2 + (index * 4);
-            let block = read_u16_le(addr_map_bytes, entry_offset)?;
+            let block = read_u16(addr_map_bytes, entry_offset, self.header.byte_order)?;
             let block_bytes = self.vm.block_bytes(block)?;
             ensure_len(block_bytes, 4, &format!("PC/GEOS line block {block:#06x}"))?;
-            let item_count = usize::from(read_u16_le(block_bytes, 2)?);
+            let item_count = usize::from(read_u16(block_bytes, 2, self.header.byte_order)?);
             let mut cursor = 4usize;
             let mut current_file_id = None;
             for item_index in 0..item_count {
@@ -962,13 +987,13 @@ impl PcGeosSymbolVmFile {
                     &format!("PC/GEOS line item {block:#06x}:{item_index}"),
                 )?;
                 if current_file_id.is_none() {
-                    current_file_id = Some(read_u32_le(block_bytes, cursor)?);
+                    current_file_id = Some(read_u32(block_bytes, cursor, self.header.byte_order)?);
                     cursor += 4;
                     continue;
                 }
 
-                let line = read_u16_le(block_bytes, cursor)?;
-                let offset = read_u16_le(block_bytes, cursor + 2)?;
+                let line = read_u16(block_bytes, cursor, self.header.byte_order)?;
+                let offset = read_u16(block_bytes, cursor + 2, self.header.byte_order)?;
                 cursor += 4;
                 if line == 0 {
                     current_file_id = None;
@@ -1315,32 +1340,62 @@ fn detect_geos_version(bytes: &[u8]) -> Option<PcGeosVersion> {
     }
 }
 
-fn detect_obj_format(bytes: &[u8]) -> SwatResult<(Endian, ObjFormatVersion)> {
+fn detect_obj_format(bytes: &[u8]) -> SwatResult<(PcGeosByteOrder, ObjFormatVersion)> {
     let raw = read_u16_le(bytes, 0)?;
     match raw {
-        OBJ_MAGIC => Ok((Endian::Little, ObjFormatVersion::Legacy)),
-        OBJ_MAGIC_NEW_FORMAT => Ok((Endian::Little, ObjFormatVersion::NewHashFormat)),
-        OBJ_SWAPPED_MAGIC => Ok((Endian::Big, ObjFormatVersion::Legacy)),
-        OBJ_SWAPPED_MAGIC_NEW_FORMAT => Ok((Endian::Big, ObjFormatVersion::NewHashFormat)),
+        OBJ_MAGIC => Ok((PcGeosByteOrder::Little, ObjFormatVersion::Legacy)),
+        OBJ_MAGIC_NEW_FORMAT => Ok((PcGeosByteOrder::Little, ObjFormatVersion::NewHashFormat)),
+        OBJ_SWAPPED_MAGIC => Ok((PcGeosByteOrder::Big, ObjFormatVersion::Legacy)),
+        OBJ_SWAPPED_MAGIC_NEW_FORMAT => Ok((PcGeosByteOrder::Big, ObjFormatVersion::NewHashFormat)),
         other => Err(SwatError::new(format!(
             "unrecognized PC/GEOS object magic {other:#06x}"
         ))),
     }
 }
 
-fn parse_obj_relocation(bytes: &[u8], offset: usize, endian: Endian) -> SwatResult<ObjRelocation> {
+fn parse_obj_relocation(
+    bytes: &[u8],
+    offset: usize,
+    byte_order: PcGeosByteOrder,
+) -> SwatResult<ObjRelocation> {
     ensure_len(bytes, offset + 10, "PC/GEOS object relocation")?;
-    let info = read_u8(bytes, offset + 8)?;
+    let info = canonicalize_obj_relocation_info(read_u8(bytes, offset + 8)?, byte_order);
     Ok(ObjRelocation {
-        symbol_offset: read_u16(bytes, offset, endian)?,
-        symbol_block: read_u16(bytes, offset + 2, endian)?,
-        target_offset: read_u16(bytes, offset + 4, endian)?,
-        frame_offset: read_u16(bytes, offset + 6, endian)?,
+        symbol_offset: read_u16(bytes, offset, byte_order)?,
+        symbol_block: read_u16(bytes, offset + 2, byte_order)?,
+        target_offset: read_u16(bytes, offset + 4, byte_order)?,
+        frame_offset: read_u16(bytes, offset + 6, byte_order)?,
         relocation_type: info & OREL_TYPE_MASK,
         size_code: (info & OREL_SIZE_MASK) >> 4,
         pc_relative: info & OREL_PCREL_MASK != 0,
         fixed: info & OREL_FIXED_MASK != 0,
     })
+}
+
+fn parse_obj_segment_layout(
+    bytes: &[u8],
+    offset: usize,
+    byte_order: PcGeosByteOrder,
+) -> SwatResult<(u8, u8, u8)> {
+    ensure_len(bytes, offset + 2, "PC/GEOS object segment layout")?;
+    let high = read_u8(bytes, offset)?;
+    let low = read_u8(bytes, offset + 1)?;
+    Ok(match byte_order {
+        PcGeosByteOrder::Little => (high, low & 0x0f, low >> 4),
+        PcGeosByteOrder::Big => (high, low >> 4, low & 0x0f),
+    })
+}
+
+fn canonicalize_obj_relocation_info(info: u8, byte_order: PcGeosByteOrder) -> u8 {
+    match byte_order {
+        PcGeosByteOrder::Little => info,
+        PcGeosByteOrder::Big => {
+            ((info & 0xf0) >> 4)
+                | ((info & 0x0c) << 2)
+                | ((info & 0x02) << 5)
+                | ((info & 0x01) << 7)
+        }
+    }
 }
 
 fn parse_icon_token(bytes: &[u8], offset: usize) -> SwatResult<IconToken> {
@@ -1401,19 +1456,19 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> SwatResult<u32> {
     ))
 }
 
-fn read_u16(bytes: &[u8], offset: usize, endian: Endian) -> SwatResult<u16> {
+fn read_u16(bytes: &[u8], offset: usize, byte_order: PcGeosByteOrder) -> SwatResult<u16> {
     let raw: [u8; 2] = slice(bytes, offset, 2, "u16")?.try_into().unwrap();
-    Ok(match endian {
-        Endian::Little => u16::from_le_bytes(raw),
-        Endian::Big => u16::from_be_bytes(raw),
+    Ok(match byte_order {
+        PcGeosByteOrder::Little => u16::from_le_bytes(raw),
+        PcGeosByteOrder::Big => u16::from_be_bytes(raw),
     })
 }
 
-fn read_u32(bytes: &[u8], offset: usize, endian: Endian) -> SwatResult<u32> {
+fn read_u32(bytes: &[u8], offset: usize, byte_order: PcGeosByteOrder) -> SwatResult<u32> {
     let raw: [u8; 4] = slice(bytes, offset, 4, "u32")?.try_into().unwrap();
-    Ok(match endian {
-        Endian::Little => u32::from_le_bytes(raw),
-        Endian::Big => u32::from_be_bytes(raw),
+    Ok(match byte_order {
+        PcGeosByteOrder::Little => u32::from_le_bytes(raw),
+        PcGeosByteOrder::Big => u32::from_be_bytes(raw),
     })
 }
 
@@ -1537,6 +1592,7 @@ mod tests {
     #[test]
     fn parses_object_header_and_resource_segments() {
         let header = ObjHeader::parse(&make_obj_header_bytes()).unwrap();
+        assert_eq!(header.byte_order, PcGeosByteOrder::Little);
         assert_eq!(header.version, ObjFormatVersion::Legacy);
         assert_eq!(header.strings, 0x0044);
         assert_eq!(header.source_map, 0x0050);

@@ -216,8 +216,10 @@ now in the workspace:
 
 This crate parses real PC/GEOS file headers, VM containers, block tables,
 string tables, and object/symbol metadata from repository artifacts while
-keeping those format details out of `swat-core`. It also includes fixture-backed
-tests against checked-in PC/GEOS VM and GEOS data files from this tree.
+keeping those format details out of `swat-core`. It now also models
+patient/geode/handle/resource/source relationships from real `.gp` manifests
+and symbol VMs, with fixture-backed tests against checked-in PC/GEOS VM, GEOS
+data, manifest, and stub-symbol files from this tree.
 
 The first script host is also now in the workspace:
 

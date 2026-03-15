@@ -102,7 +102,8 @@
 
 - `swat-format-pcgeos`
   Support crate for PC/GEOS file headers, VM containers, string tables,
-  symbol/object metadata, and source/resource mappings. It keeps legacy
+  symbol/object metadata, source/resource mappings, and real repository
+  patient/geode/handle/source relationship modeling. It keeps legacy
   repository-format parsing out of `swat-core` while giving the future
   `swat-adapter-pcgeos` and shared operator layers a reusable substrate.
 
