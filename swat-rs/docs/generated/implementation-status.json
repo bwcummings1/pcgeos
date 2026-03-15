@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 18,
-    "pending": 3,
+    "done": 19,
+    "pending": 2,
     "blocked": 0
   },
   "tasks": [
@@ -173,12 +173,12 @@
     },
     {
       "task": "T-019",
-      "status": "pending",
+      "status": "done",
       "milestone": "M6",
       "description": "Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Cover registers, memory, stack, patient, handle, and source flows."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "f39efc6a",
+      "notes": "Shared API, shell, and TUI flows now expose PC/GEOS registers, memory snapshots, stack frames, patient/handle/resource/object views, and real source navigation over the fixture adapter."
     },
     {
       "task": "T-020",
