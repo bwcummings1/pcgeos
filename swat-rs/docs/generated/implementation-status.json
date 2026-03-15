@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 16,
-    "pending": 5,
+    "done": 17,
+    "pending": 4,
     "blocked": 0
   },
   "tasks": [
@@ -155,12 +155,12 @@
     },
     {
       "task": "T-017",
-      "status": "pending",
+      "status": "done",
       "milestone": "M5",
       "description": "Model patient/handle/resource/geode/source relationships over real repository artifacts.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Use real repository fixtures rather than synthetic placeholders."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "6805b215",
+      "notes": "`swat-format-pcgeos` now models real manifest and symbol fixtures into typed patient/geode/handle/resource/source relationships, with repository-backed tests and an inspection example."
     },
     {
       "task": "T-018",

@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `16/21 done`
-- Pending: `5`
+- Progress: `17/21 done`
+- Pending: `4`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -27,7 +27,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-014 | done | M4 | swat-rs-full-completion-plan | cc3fb524 |
 | T-015 | done | M4 | swat-rs-full-completion-plan | 1f6fe82b |
 | T-016 | done | M5 | swat-rs-full-completion-plan | d29487d9 |
-| T-017 | pending | M5 | - | - |
+| T-017 | done | M5 | swat-rs-full-completion-plan | 6805b215 |
 | T-018 | pending | M6 | - | - |
 | T-019 | pending | M6 | - | - |
 | T-020 | pending | M7 | - | - |
@@ -53,7 +53,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-014 | Add package-oriented script loading and shared command metadata integration. | Built-in script packages now autoload over the public API, and shell help/search/completion reuse the same package metadata. |
 | T-015 | Migrate the highest-value legacy Tcl command families onto the new runtime and help surface. | Legacy-style stack/source/patient/process/object helpers now ride on the shared runtime, help registry, and TUI surface. |
 | T-016 | Implement PC/GEOS VM, symbol, geode, and object format readers or bridges. | `swat-format-pcgeos` now parses PC/GEOS file headers, VM containers, geode imports, and object/symbol source-resource metadata, with repository-backed VM/data fixture tests. |
-| T-017 | Model patient/handle/resource/geode/source relationships over real repository artifacts. | Use real repository fixtures rather than synthetic placeholders. |
+| T-017 | Model patient/handle/resource/geode/source relationships over real repository artifacts. | `swat-format-pcgeos` now models real manifest and symbol fixtures into typed patient/geode/handle/resource/source relationships, with repository-backed tests and an inspection example. |
 | T-018 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | Support replay-fixture mode first if necessary, then live target/emulator paths. |
 | T-019 | Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos. | Cover registers, memory, stack, patient, handle, and source flows. |
 | T-020 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | Make long-session workflows practical instead of demo-oriented. |
