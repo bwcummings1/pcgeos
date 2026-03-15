@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 3,
-    "pending": 18,
+    "done": 4,
+    "pending": 17,
     "blocked": 0
   },
   "tasks": [
@@ -38,12 +38,12 @@
     },
     {
       "task": "T-004",
-      "status": "pending",
+      "status": "done",
       "milestone": "M1",
       "description": "Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Keep using shared control APIs; do not fork a second command surface."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "780f01cf",
+      "notes": "`swat-api` now projects shared breakpoint summaries/details/groups; `breakpoint list/show/groups` use that model while raw `triggers` stays compatible."
     },
     {
       "task": "T-005",
