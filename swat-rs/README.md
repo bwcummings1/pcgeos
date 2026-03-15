@@ -22,8 +22,10 @@ The canonical agent handoff documents now live at the workspace root:
 
 `swat-rs v1` is complete.
 
-The whole project is not yet complete relative to legacy PC/GEOS Swat parity.
-For the remaining post-`v1` work, use `PROJECT_COMPLETION_PLAN.md`.
+The full post-`v1` completion plan is now satisfied on
+`swat-rs-full-completion-plan`. Use `PROJECT_COMPLETION_PLAN.md`, the generated
+status artifacts, and the validation/demo scripts below as the reproducible
+handoff record for future maintenance or extension work.
 
 The post-`v1` branch also now carries a continuous execution harness:
 
@@ -110,6 +112,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0035-legacy-helper-command-families.md`
 - `docs/adrs/0036-pcgeos-format-support-crate.md`
 - `docs/adrs/0037-pcgeos-fixture-first-adapter.md`
+- `docs/adrs/0038-shared-operator-dashboards-and-persisted-history.md`
 
 ## Phase 1 status
 
@@ -366,6 +369,10 @@ Run the PC/GEOS fixture shell with:
 
 `cargo run -p swat-command -- pcgeos`
 
+Run the scripted PC/GEOS shell plus headless-TUI walkthrough with:
+
+`bash scripts/demo-pcgeos-workflows.sh`
+
 ## Continuous execution harness
 
 The full-completion branch is meant to run as a continuous queue, not as a
@@ -376,6 +383,10 @@ Validate and refresh the execution record with:
 `python3 scripts/check-implementation-status.py`
 
 `python3 scripts/render-implementation-status.py`
+
+Run the full reproducible validation/demo sweep with:
+
+`bash scripts/run-full-validation.sh`
 
 Run unattended completion supervision with:
 

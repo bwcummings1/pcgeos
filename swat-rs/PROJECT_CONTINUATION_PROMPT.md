@@ -1,15 +1,17 @@
 You are continuing implementation of `swat-rs` inside
 `/home/ubuntu/pcgeos/swat-rs`.
 
-`swat-rs v1` is already complete. Your job now is to finish the whole project,
-meaning close the remaining gap to legacy PC/GEOS Swat as a full debugger
-system while preserving the modern Rust architecture and the already-green
-`v1` surface.
+`swat-rs v1` is already complete. The full post-`v1` completion plan has also
+been satisfied on `swat-rs-full-completion-plan`.
+
+Use this prompt for maintenance, reproducible validation, or future extension
+work without relying on prior chat history. Preserve the completed architecture
+and green workspace unless a new task explicitly changes the finish line.
 
 Your job is not to redesign the project from scratch. Your job is to preserve
-contextual coherence with legacy PC/GEOS Swat, keep the finished `v1` intact,
-and continue implementation until the `Definition of Done` in
-`/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md` is satisfied.
+contextual coherence with legacy PC/GEOS Swat, keep the finished `v1` and
+full-completion checkpoint intact, and only reopen the completion plan if the
+live queue or a new request explicitly requires more work.
 
 Read these first, in order:
 
@@ -29,6 +31,8 @@ Then run the harness commands:
 
 - `python3 scripts/check-implementation-status.py`
 - `python3 scripts/render-implementation-status.py --check`
+- `bash scripts/run-full-validation.sh` for the full reproducible validation and
+  demo sweep
 
 If you are running unattended, prefer the supervisor instead of a one-shot
 prompt:
@@ -72,9 +76,9 @@ Hard constraints:
 5. Do not move UI logic into lower layers.
 6. Do not bypass `swat-api` from shell, script, or TUI when shared API use is
    possible.
-7. Do not claim the project is complete until every item in the `Definition of
+7. Do not claim the project is complete unless every item in the `Definition of
    Done` section of `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md`
-   is satisfied.
+   is satisfied and the queue remains fully done.
 8. Do not stop to ask whether to move to the next milestone unless you are
    truly blocked by conflicting requirements or unavailable external resources.
 9. Keep docs and ADRs current as implementation changes.
@@ -104,9 +108,11 @@ Do not skip to later milestones before the earlier ones are materially closed.
 
 Immediate next task:
 
-Resume with the first `pending` task in the active queue and start with the
-highest-value coherent slice under that task. Do not follow stale task numbers
-from old summaries; the queue in `PROJECT_COMPLETION_PLAN.md` is authoritative.
+1. verify the live queue and generated status artifacts
+2. if the queue is fully done, preserve the clean checkpoint and treat the repo
+   as a maintenance/extension baseline
+3. if any task is pending or blocked again, resume from the first such task in
+   the active queue instead of relying on stale summaries
 
 Validation discipline for every slice:
 
@@ -125,4 +131,4 @@ You are done only when the `Definition of Done` in:
 
 is fully satisfied.
 
-Until then, continue implementing.
+Until then, continue implementing or validating from the clean checkpoint.

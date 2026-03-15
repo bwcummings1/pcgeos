@@ -58,6 +58,10 @@ Workspace validation command:
 
 `cargo test`
 
+Full closeout validation script:
+
+`bash scripts/run-full-validation.sh`
+
 Useful demos:
 
 - `cargo run -p swat-session --example mock_session`
@@ -67,6 +71,7 @@ Useful demos:
 - `cargo run -p swat-command -- mock`
 - `cargo run -p swat-command -- pcgeos`
 - `cargo run -p swat-command -- mock` then `dashboard control`, `history 20`
+- `bash scripts/demo-pcgeos-workflows.sh`
 - `cargo run -p swat-ui-tui -- --headless --ticks 4 mock`
 - `cargo run -p swat-ui-tui -- --headless --ticks 2 pcgeos`
 - `cargo run -p swat-ui-tui -- pcgeos` then use `1`, `2`, `3` or `:dashboard control`

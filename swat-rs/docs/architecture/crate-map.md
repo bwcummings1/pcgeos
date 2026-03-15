@@ -79,19 +79,19 @@
   layer is now implemented.
 
 - `swat-command`
-  Live command runtime over a session, adapter, and store. The first interactive
-  operator shell is now implemented, including live semantic trigger
-  management, versioned persistence for expression-based trigger sets, and a
-  runnable CLI shell.
+  Live command runtime over a session, adapter, and store. The interactive
+  operator shell is implemented with shared debugger-family commands,
+  trigger/watchpoint management, snapshots/replay, persisted per-surface
+  history, and dashboard-oriented long-session views.
 
 - `swat-script`
   Sandboxed automation runtime. The first read-only embedded script host is now
   implemented.
 
 - `swat-ui-tui`
-  Terminal frontend. The first live TUI is now implemented with event, entity,
-  source, artifact, and command-entry panes over the shared debugger substrate,
-  plus a headless render mode for demos and tests.
+  Terminal frontend. The live TUI is implemented with event browsing,
+  execution/control/target dashboards, shared command entry, persisted command
+  history, and a headless render mode for demos and tests.
 
 ## Later adapters
 
@@ -112,11 +112,11 @@
   `swat-adapter-pcgeos` and shared operator layers a reusable substrate.
 
 - expanded `swat-command` and `swat-script`
-  The likely landing zone for the missing debugger command ecology, command
-  families, help metadata, autoload behavior, and script-package migration from
-  the legacy Tcl surface.
+  Completed landing zone for debugger command ecology, shared help/completion
+  metadata, long-session history/dashboard workflows, and package-oriented
+  script migration from the legacy Tcl surface.
 
 - expanded `swat-ui-tui`
-  The likely landing zone for debugger-grade panes covering stack, breakpoints,
-  patients, handles, source navigation, replay, and other long-session
-  operator workflows.
+  Completed landing zone for debugger-grade panes covering stack,
+  breakpoints/watchpoints, patients/handles/objects, source navigation, replay,
+  and other long-session operator workflows.
