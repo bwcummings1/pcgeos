@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 19,
-    "pending": 2,
+    "done": 20,
+    "pending": 1,
     "blocked": 0
   },
   "tasks": [
@@ -182,12 +182,12 @@
     },
     {
       "task": "T-020",
-      "status": "pending",
+      "status": "done",
       "milestone": "M7",
       "description": "Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Make long-session workflows practical instead of demo-oriented."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "4e5045cb",
+      "notes": "Shared `dashboard`/`history` workflows now drive persisted shell/TUI history, switchable execution/control/target dashboards, replay and breakpoint panes, and larger-session navigation without bypassing shared command metadata."
     },
     {
       "task": "T-021",

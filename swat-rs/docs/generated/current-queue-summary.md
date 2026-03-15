@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `19/21 done`
-- Pending: `2`
+- Progress: `20/21 done`
+- Pending: `1`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -30,7 +30,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-017 | done | M5 | swat-rs-full-completion-plan | 6805b215 |
 | T-018 | done | M6 | swat-rs-full-completion-plan | 36eea65b |
 | T-019 | done | M6 | swat-rs-full-completion-plan | f39efc6a |
-| T-020 | pending | M7 | - | - |
+| T-020 | done | M7 | swat-rs-full-completion-plan | 4e5045cb |
 | T-021 | pending | M8 | - | - |
 
 ## Task Notes
@@ -56,5 +56,5 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-017 | Model patient/handle/resource/geode/source relationships over real repository artifacts. | `swat-format-pcgeos` now models real manifest and symbol fixtures into typed patient/geode/handle/resource/source relationships, with repository-backed tests and an inspection example. |
 | T-018 | Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge. | `swat-adapter-pcgeos` now provides a fixture-first PC/GEOS adapter over real manifests/symbol VMs, and `swat-replay` now replays any boundary-payload event rather than only model/tool kinds. |
 | T-019 | Expose PC/GEOS control and inspection through shared APIs, shell, TUI, and demos. | Shared API, shell, and TUI flows now expose PC/GEOS registers, memory snapshots, stack frames, patient/handle/resource/object views, and real source navigation over the fixture adapter. |
-| T-020 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | Make long-session workflows practical instead of demo-oriented. |
+| T-020 | Deepen shell and TUI debugger ergonomics, panes, replay views, breakpoint views, history, and completion. | Shared `dashboard`/`history` workflows now drive persisted shell/TUI history, switchable execution/control/target dashboards, replay and breakpoint panes, and larger-session navigation without bypassing shared command metadata. |
 | T-021 | Final integration, docs, fixtures, demos, clean tree, and reproducible handoff until the full Definition of Done is satisfied. | This is the final closeout gate, not a cosmetic polish task. |
