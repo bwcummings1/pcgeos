@@ -43,6 +43,13 @@ fn script_host_can_query_mock_trace() {
             .unwrap(),
         1
     );
+    assert_eq!(host.eval_i64("ctx.stack_frame_count()").unwrap(), 1);
+    assert!(
+        !host
+            .eval_string("ctx.stack_frame_label(0)")
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         host.eval_string(r#"ctx.first_summary("summary contains \"observed\"")"#)
             .unwrap()
@@ -88,10 +95,27 @@ helper(2)
     }
 
     let mut host = ScriptHost::new(&store, session_id);
+    let script_path_str = script_path.display().to_string();
+    assert_eq!(host.eval_i64("ctx.source_file_count()").unwrap(), 1);
+    assert!(
+        host.eval_i64(&format!(
+            r#"ctx.source_file_event_count("{}")"#,
+            script_path_str
+        ))
+        .unwrap()
+            >= 1
+    );
     assert!(
         host.eval_bool(
             r#"ctx.source_contains("artifact.json $.function == \"helper\"", "def helper", 0, 1)"#,
         )
+        .unwrap()
+    );
+    assert!(
+        host.eval_bool(&format!(
+            r#"ctx.source_view_contains("{}", 1, 0, 2, "def helper")"#,
+            script_path_str
+        ))
         .unwrap()
     );
 
@@ -117,6 +141,7 @@ fn live_script_session_uses_public_mutation_api() {
     );
     assert_eq!(live.event_count(), 1);
     assert_eq!(live.trigger_count(), 0);
+    assert_eq!(live.breakpoint_count(), 0);
     assert!(live.resume().unwrap().contains("resumed"));
 
     let trigger_id = live
@@ -127,11 +152,19 @@ fn live_script_session_uses_public_mutation_api() {
         )
         .unwrap();
     assert_eq!(live.trigger_count(), 1);
+    assert_eq!(live.breakpoint_count(), 1);
+    assert_eq!(live.breakpoint_enabled_count(), 1);
+    assert_eq!(live.breakpoint_group_count("state", "enabled").unwrap(), 1);
     assert_eq!(live.disable_trigger(trigger_id).unwrap(), true);
+    assert_eq!(live.breakpoint_enabled_count(), 0);
+    assert_eq!(live.breakpoint_group_count("state", "disabled").unwrap(), 1);
     assert_eq!(live.enable_trigger(trigger_id).unwrap(), false);
+    assert_eq!(live.breakpoint_enabled_count(), 1);
 
     live.pump_once().unwrap();
     live.pump_once().unwrap();
+    assert_eq!(live.stack_frame_count().unwrap(), 1);
+    assert!(!live.stack_frame_label(0).unwrap().is_empty());
     let snapshot_id = live.snapshot("script checkpoint").unwrap();
     assert!(snapshot_id.raw() > 0);
     assert_eq!(

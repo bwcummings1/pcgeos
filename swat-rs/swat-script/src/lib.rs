@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use rhai::{Dynamic, Engine, EvalAltResult, Scope};
-use swat_api::{LiveSessionApi, TraceInspector};
+use swat_api::{BreakpointGroupKind, BreakpointState, LiveSessionApi, TraceInspector};
 use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate};
 use swat_core::{
     ArtifactId, ControlAction, EventEnvelope, SessionId, SnapshotId, SnapshotRecord, SwatError,
@@ -174,6 +174,61 @@ impl ScriptContext {
             .map(|snippet| snippet.lines.iter().any(|line| line.text.contains(needle)))
             .unwrap_or(false)
     }
+
+    pub fn stack_frame_count(&mut self) -> i64 {
+        self.inspector()
+            .stack_frames(self.session_id)
+            .map(|frames| frames.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn stack_frame_label(&mut self, frame_index: i64) -> String {
+        if frame_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .stack_frame(self.session_id, frame_index as usize)
+            .ok()
+            .flatten()
+            .map(|frame| frame.label)
+            .unwrap_or_default()
+    }
+
+    pub fn source_file_count(&mut self) -> i64 {
+        self.inspector()
+            .source_files(self.session_id)
+            .map(|files| files.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn source_file_event_count(&mut self, file: &str) -> i64 {
+        self.inspector()
+            .events_for_source_file(self.session_id, file)
+            .map(|events| events.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn source_view_contains(
+        &mut self,
+        file: &str,
+        line: i64,
+        before: i64,
+        after: i64,
+        needle: &str,
+    ) -> bool {
+        if line <= 0 {
+            return false;
+        }
+        self.inspector()
+            .source_file_view(
+                file,
+                line as usize,
+                before.max(0) as usize,
+                after.max(0) as usize,
+            )
+            .map(|snippet| snippet.lines.iter().any(|line| line.text.contains(needle)))
+            .unwrap_or(false)
+    }
 }
 
 pub struct ScriptHost {
@@ -194,6 +249,14 @@ impl ScriptHost {
         engine.register_fn("query_count", ScriptContext::query_count);
         engine.register_fn("first_summary", ScriptContext::first_summary);
         engine.register_fn("source_contains", ScriptContext::source_contains);
+        engine.register_fn("stack_frame_count", ScriptContext::stack_frame_count);
+        engine.register_fn("stack_frame_label", ScriptContext::stack_frame_label);
+        engine.register_fn("source_file_count", ScriptContext::source_file_count);
+        engine.register_fn(
+            "source_file_event_count",
+            ScriptContext::source_file_event_count,
+        );
+        engine.register_fn("source_view_contains", ScriptContext::source_view_contains);
 
         let mut scope = Scope::new();
         scope.push("ctx", ScriptContext::from_store(store, session_id));
@@ -273,12 +336,94 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
         self.api().triggers().len() as i64
     }
 
+    pub fn breakpoint_count(&mut self) -> i64 {
+        self.api().breakpoint_summaries().len() as i64
+    }
+
+    pub fn breakpoint_enabled_count(&mut self) -> i64 {
+        self.api()
+            .breakpoint_summaries()
+            .into_iter()
+            .filter(|breakpoint| breakpoint.state == BreakpointState::Enabled)
+            .count() as i64
+    }
+
+    pub fn breakpoint_group_count(&mut self, kind: &str, label: &str) -> SwatResult<i64> {
+        let kind = parse_breakpoint_group_kind(kind)?;
+        Ok(self
+            .api()
+            .breakpoint_groups()
+            .into_iter()
+            .find(|group| group.kind == kind && group.label == label)
+            .map(|group| group.breakpoints.len() as i64)
+            .unwrap_or(0))
+    }
+
+    pub fn breakpoint_hit_count(&mut self, trigger_id: TriggerId) -> SwatResult<i64> {
+        self.api()
+            .breakpoint_detail(trigger_id)
+            .map(|detail| detail.breakpoint.hit_count as i64)
+            .ok_or_else(|| SwatError::new(format!("unknown breakpoint {}", trigger_id.raw())))
+    }
+
     pub fn pump_once(&mut self) -> SwatResult<usize> {
         Ok(self
             .manager
             .pump(self.session_id, self.adapter, self.store)?
             .stored_events
             .len())
+    }
+
+    pub fn stack_frame_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().stack_frames(session_id)?.len() as i64)
+    }
+
+    pub fn stack_frame_label(&mut self, frame_index: i64) -> SwatResult<String> {
+        if frame_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .stack_frame(session_id, frame_index as usize)?
+            .map(|frame| frame.label)
+            .unwrap_or_default())
+    }
+
+    pub fn source_file_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().source_files(session_id)?.len() as i64)
+    }
+
+    pub fn source_file_event_count(&mut self, file: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .events_for_source_file(session_id, file)?
+            .len() as i64)
+    }
+
+    pub fn source_view_contains(
+        &mut self,
+        file: &str,
+        line: i64,
+        before: i64,
+        after: i64,
+        needle: &str,
+    ) -> SwatResult<bool> {
+        if line <= 0 {
+            return Ok(false);
+        }
+        let snippet = self.api().inspector().source_file_view(
+            file,
+            line as usize,
+            before.max(0) as usize,
+            after.max(0) as usize,
+        )?;
+        Ok(snippet.lines.iter().any(|line| line.text.contains(needle)))
     }
 
     pub fn resume(&mut self) -> SwatResult<String> {
@@ -358,5 +503,17 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
 
     fn api(&mut self) -> LiveSessionApi<'_, A, S> {
         LiveSessionApi::new(self.manager, self.adapter, self.store, self.trigger_engine)
+    }
+}
+
+fn parse_breakpoint_group_kind(kind: &str) -> SwatResult<BreakpointGroupKind> {
+    match kind {
+        "state" => Ok(BreakpointGroupKind::State),
+        "lifetime" => Ok(BreakpointGroupKind::Lifetime),
+        "disposition" => Ok(BreakpointGroupKind::Disposition),
+        "activity" => Ok(BreakpointGroupKind::Activity),
+        other => Err(SwatError::new(format!(
+            "unknown breakpoint group kind '{other}'"
+        ))),
     }
 }

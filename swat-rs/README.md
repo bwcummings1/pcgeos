@@ -197,7 +197,9 @@ The first script host is also now in the workspace:
 
 This crate provides a read-only embedded scripting surface over frozen trace
 snapshots, with helpers for summary search, artifact search, expression-backed
-queries, and source lookup.
+queries, stack/source inspection, and file-oriented source lookup. Its live
+session wrappers now expose breakpoint, stack, and source workflows through
+the same shared `swat-api` surface used by the shell and TUI.
 
 The first API crate is also now in the workspace:
 
