@@ -97,6 +97,10 @@
 
 - `swat-adapter-http`
 - `swat-adapter-pcgeos`
+  Fixture-first PC/GEOS adapter over real repository manifests and symbol VMs.
+  It keeps the host/target bridge on the shared `TargetAdapter` and
+  `swat-session`/`swat-replay` surfaces while deferring live RPC transport work
+  to later slices.
 
 ## Post-v1 full-completion targets
 

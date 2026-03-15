@@ -11,6 +11,7 @@ members = [
     "swat-adapter-python",
     "swat-agent-protocol",
     "swat-adapter-agent",
+    "swat-adapter-pcgeos",
     "swat-control",
     "swat-format-pcgeos",
     "swat-value",

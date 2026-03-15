@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use swat_core::{
     AdapterEmission, BoundaryId, BoundaryReplayDirective, DeterminismClass, EventEnvelope,
-    EventKind, EventPayload, SwatResult, TargetAdapter,
+    EventPayload, SwatResult, TargetAdapter,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -17,13 +17,6 @@ impl ReplayPlan {
         let mut directives = BTreeMap::new();
 
         for event in events {
-            if !matches!(
-                event.kind,
-                EventKind::ModelBoundary | EventKind::ToolBoundary
-            ) {
-                continue;
-            }
-
             let EventPayload::Boundary {
                 boundary_id,
                 determinism,

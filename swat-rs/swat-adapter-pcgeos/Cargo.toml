@@ -1,0 +1,17 @@
+[package]
+name = "swat-adapter-pcgeos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+swat-core = { path = "../swat-core" }
+swat-format-pcgeos = { path = "../swat-format-pcgeos" }
+
+[dev-dependencies]
+swat-replay = { path = "../swat-replay" }
+swat-session = { path = "../swat-session" }
+swat-store = { path = "../swat-store" }
+swat-value = { path = "../swat-value" }

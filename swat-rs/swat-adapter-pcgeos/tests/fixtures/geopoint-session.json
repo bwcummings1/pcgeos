@@ -1,0 +1,141 @@
+{
+  "target_name": "pcgeos-geopoint-fixture",
+  "runtime": "pcgeos-fixture",
+  "default_patient": "geopoint",
+  "gp_paths": [
+    "../../../../Appl/GeoPoint/geopoint.gp"
+  ],
+  "symbol_paths": [
+    "../../../../Tools/swat/Stub/RESPONDER/swat.sym.052397"
+  ],
+  "stops": [
+    {
+      "summary": "attached at initial GeoPoint stop",
+      "frames": [
+        {
+          "boundary_id": 1001,
+          "summary": "GeoPoint process dispatch",
+          "name": "GeoPointProcessClass::MSG_META_ATTACH",
+          "function": "GeoPointProcessClass::MSG_META_ATTACH",
+          "file": "../../../../Appl/GeoPoint/ui.goc",
+          "line": 61,
+          "correlation_id": "pcgeos-stop-1",
+          "span_id": "gp-stop-1-outer",
+          "patient": "geopoint",
+          "handle": "geopoint.app:handle:AppResource",
+          "resource": "geopoint.app:AppResource",
+          "registers": {
+            "ax": { "type": "word", "group": "general", "value": "0x002d" },
+            "bx": { "type": "word", "group": "general", "value": "0x1000" },
+            "cx": { "type": "word", "group": "general", "value": "0x0001" },
+            "dx": { "type": "word", "group": "general", "value": "0x0042" },
+            "sp": { "type": "word", "group": "stack", "value": "0xff70" },
+            "bp": { "type": "word", "group": "stack", "value": "0xff82" },
+            "cs": { "type": "segment", "group": "segment", "value": "0x91f0" },
+            "ip": { "type": "offset", "group": "instruction", "value": "0x0132" }
+          },
+          "locals": {
+            "message": { "type": "word", "value": "0x002d" },
+            "patient": { "type": "patient", "value": "geopoint" }
+          }
+        },
+        {
+          "boundary_id": 1002,
+          "summary": "GeoPoint opened document metadata",
+          "name": "GeoPointApp::OpenDocument",
+          "function": "GeoPointApp::OpenDocument",
+          "file": "../../../../Appl/GeoPoint/show.goc",
+          "line": 108,
+          "correlation_id": "pcgeos-stop-1",
+          "span_id": "gp-stop-1-inner",
+          "patient": "geopoint",
+          "handle": "geopoint.app:handle:Interface",
+          "resource": "geopoint.app:Interface",
+          "registers": {
+            "ax": { "type": "word", "group": "general", "value": "0x0135" },
+            "si": { "type": "word", "group": "index", "value": "0x0040" },
+            "di": { "type": "word", "group": "index", "value": "0x0100" },
+            "ds": { "type": "segment", "group": "segment", "value": "0x7e10" }
+          },
+          "locals": {
+            "documentName": { "type": "char *", "value": "people__.000" },
+            "resource": { "type": "resource", "value": "Interface" }
+          },
+          "objects": [
+            {
+              "id": "GeoPointApp",
+              "name": "GeoPointApp",
+              "class": "ScrapBookClass",
+              "patient": "geopoint",
+              "handle": "geopoint.app:handle:Interface",
+              "resource": "geopoint.app:Interface",
+              "address": "^l0001h:0002h",
+              "flags": ["ui-object", "resident"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "summary": "resumed to the next GeoPoint stop",
+      "frames": [
+        {
+          "boundary_id": 1011,
+          "summary": "GeoPoint show logic dispatch",
+          "name": "GeoPointProcessClass::MSG_META_NOTIFY",
+          "function": "GeoPointProcessClass::MSG_META_NOTIFY",
+          "file": "../../../../Appl/GeoPoint/proc.goc",
+          "line": 44,
+          "correlation_id": "pcgeos-stop-2",
+          "span_id": "gp-stop-2-outer",
+          "patient": "geopoint",
+          "handle": "geopoint.app:handle:ShowResource",
+          "resource": "geopoint.app:ShowResource",
+          "registers": {
+            "ax": { "type": "word", "group": "general", "value": "0x0100" },
+            "bx": { "type": "word", "group": "general", "value": "0x2020" },
+            "sp": { "type": "word", "group": "stack", "value": "0xff40" }
+          },
+          "locals": {
+            "notification": { "type": "word", "value": "0x0100" }
+          }
+        },
+        {
+          "boundary_id": 1012,
+          "summary": "GeoPoint show code updated the slide view",
+          "name": "GeoPointApp::UpdateSlideView",
+          "function": "GeoPointApp::UpdateSlideView",
+          "file": "../../../../Appl/GeoPoint/show.goc",
+          "line": 147,
+          "correlation_id": "pcgeos-stop-2",
+          "span_id": "gp-stop-2-inner",
+          "patient": "geopoint",
+          "handle": "geopoint.app:handle:ShowResource",
+          "resource": "geopoint.app:ShowResource",
+          "registers": {
+            "ax": { "type": "word", "group": "general", "value": "0x0042" },
+            "cx": { "type": "word", "group": "general", "value": "0x0003" },
+            "dx": { "type": "word", "group": "general", "value": "0x0001" },
+            "es": { "type": "segment", "group": "segment", "value": "0x8a10" }
+          },
+          "locals": {
+            "currentSlide": { "type": "word", "value": 3 },
+            "defaultPatient": { "type": "patient", "value": "geopoint" }
+          },
+          "objects": [
+            {
+              "id": "GeoPointDocument",
+              "name": "GeoPointDocument",
+              "class": "GPointDocumentControlClass",
+              "patient": "geopoint",
+              "handle": "geopoint.app:handle:ShowResource",
+              "resource": "geopoint.app:ShowResource",
+              "address": "^l0002h:0004h",
+              "flags": ["document", "visible"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

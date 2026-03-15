@@ -109,6 +109,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0034-package-oriented-script-libraries.md`
 - `docs/adrs/0035-legacy-helper-command-families.md`
 - `docs/adrs/0036-pcgeos-format-support-crate.md`
+- `docs/adrs/0037-pcgeos-fixture-first-adapter.md`
 
 ## Phase 1 status
 
@@ -220,6 +221,16 @@ keeping those format details out of `swat-core`. It now also models
 patient/geode/handle/resource/source relationships from real `.gp` manifests
 and symbol VMs, with fixture-backed tests against checked-in PC/GEOS VM, GEOS
 data, manifest, and stub-symbol files from this tree.
+
+The first PC/GEOS adapter crate is also now in the workspace:
+
+- `swat-adapter-pcgeos`
+
+This crate implements a fixture-first `TargetAdapter` for PC/GEOS sessions. It
+hydrates real repository manifests and symbol VMs into shared inventory
+artifacts, emits debugger-style stop frames with registers/locals/source
+metadata, and supports replay-plan injection over the same session/replay
+surface used by the existing adapters.
 
 The first script host is also now in the workspace:
 

@@ -789,6 +789,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "swat-adapter-pcgeos"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "swat-core",
+ "swat-format-pcgeos",
+ "swat-replay",
+ "swat-session",
+ "swat-store",
+ "swat-value",
+]
+
+[[package]]
 name = "swat-adapter-python"
 version = "0.1.0"
 dependencies = [
