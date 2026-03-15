@@ -35,6 +35,9 @@ prompt:
 
 - `python3 scripts/run-continuous-agent.py`
 
+That supervisor runs in the foreground by default and mirrors each cycle's
+runner output to the terminal while preserving logs.
+
 Then inspect the main implementation seams:
 
 - `/home/ubuntu/pcgeos/swat-rs/swat-core/src/lib.rs`

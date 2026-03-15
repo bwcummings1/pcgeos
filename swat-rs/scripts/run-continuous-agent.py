@@ -79,6 +79,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print the generated cycle prompt to stdout.",
     )
+    parser.add_argument(
+        "--stream-output",
+        dest="stream_output",
+        action="store_true",
+        help="Stream runner output live to stdout while also saving it to the cycle log.",
+    )
+    parser.add_argument(
+        "--no-stream-output",
+        dest="stream_output",
+        action="store_false",
+        help="Do not mirror runner output to stdout; keep it only in the cycle log.",
+    )
+    parser.set_defaults(stream_output=True)
     return parser.parse_args()
 
 
@@ -88,6 +101,7 @@ def run_command(
     cwd: Path,
     input_text: str | None = None,
     stdout_path: Path | None = None,
+    stream_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if stdout_path is None:
         return subprocess.run(
@@ -108,15 +122,44 @@ def run_command(
             if not input_text.endswith("\n"):
                 handle.write("\n")
             handle.write("\n## Runner Output\n\n")
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            input=input_text,
-            text=True,
-            stdout=handle,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        handle.flush()
+
+        if stream_output:
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            if input_text and process.stdin is not None:
+                process.stdin.write(input_text)
+            if process.stdin is not None:
+                process.stdin.close()
+            assert process.stdout is not None
+            for line in process.stdout:
+                handle.write(line)
+                handle.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            result = subprocess.CompletedProcess(
+                cmd,
+                process.wait(),
+                stdout="",
+                stderr="",
+            )
+        else:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                input=input_text,
+                text=True,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
 
     return subprocess.CompletedProcess(cmd, result.returncode, stdout="", stderr="")
 
@@ -417,11 +460,14 @@ def main() -> None:
         print(
             f"[cycle {cycle_number}] next task {pending['task']} | mode={'resume' if use_resume else 'fresh'} | log={stdout_path}"
         )
+        if args.stream_output:
+            print(f"[cycle {cycle_number}] streaming live runner output below")
         result = run_command(
             cmd,
             cwd=git_root,
             input_text=prompt_text,
             stdout_path=stdout_path,
+            stream_output=args.stream_output,
         )
         state["runnerExitCode"] = result.returncode
 

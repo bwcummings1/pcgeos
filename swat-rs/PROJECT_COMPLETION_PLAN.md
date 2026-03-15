@@ -76,6 +76,8 @@ Execution rules:
 6. For unattended execution, use `scripts/run-continuous-agent.py` instead of
    launching a one-shot agent manually. The supervisor is responsible for
    relaunching the agent until the queue is complete or a blocker is recorded.
+   By default it streams live runner output in the same terminal while
+   preserving per-cycle logs under `swat-rs/.runs/continuous-agent/`.
 
 ## Current Cycle Queue (T-001..T-021)
 

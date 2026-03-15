@@ -293,6 +293,10 @@ Run unattended completion supervision with:
 
 `python3 scripts/run-continuous-agent.py`
 
+This runs in the foreground and mirrors each agent cycle's output to your
+terminal while still saving logs under `swat-rs/.runs/continuous-agent/`.
+Use `--no-stream-output` if you want headless log-only supervision.
+
 Verify the generated queue artifacts are current with:
 
 `python3 scripts/render-implementation-status.py --check`
