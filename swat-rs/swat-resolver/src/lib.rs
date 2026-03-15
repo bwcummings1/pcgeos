@@ -462,6 +462,20 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
         )
     }
 
+    pub fn events_for_function(
+        &self,
+        session_id: SessionId,
+        function: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        self.events_for_entity(
+            session_id,
+            &EntityRef {
+                kind: ResolvedEntityKind::FunctionName,
+                name: function.to_string(),
+            },
+        )
+    }
+
     pub fn events_for_patient(
         &self,
         session_id: SessionId,

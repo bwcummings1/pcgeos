@@ -60,7 +60,7 @@ fn synthetic_session_events() -> (
                         media_type: "application/json".to_string(),
                         encoding: ArtifactEncoding::Json,
                         access: ArtifactAccess::Lazy,
-                        bytes: br#"{"tool":"search","decision":"call-tool","correlation_id":"req-7","span_id":"model-1","file":"/tmp/demo.py","function":"helper"}"#.to_vec(),
+                        bytes: br#"{"tool":"search","decision":"call-tool","correlation_id":"req-7","span_id":"model-1","file":"/tmp/demo.py","line":14,"function":"helper","patient":{"name":"ui","handles":[{"id":"h:1001","resource":"AppResource","objects":[{"id":"^lui:0002","class":"GenApplication"}]}],"resources":[{"name":"AppResource","handle":"h:1001","objects":["^lui:0002"]}],"objects":[{"id":"^lui:0002","class":"GenApplication","handle":"h:1001","resource":"AppResource"}]}}"#.to_vec(),
                     },
                     PendingArtifact {
                         alias: value_alias,
@@ -124,7 +124,12 @@ fn evaluates_query_against_richer_event_fields() {
             "correlation == \"req-7\" and ",
             "boundary == 42 and ",
             "span == \"model-1\" and ",
+            "patient == \"ui\" and ",
+            "handle == \"h:1001\" and ",
+            "resource == \"AppResource\" and ",
+            "object == \"^lui:0002\" and ",
             "source.file contains \"demo.py\" and ",
+            "source.line == 14 and ",
             "source.function == \"helper\" and ",
             "not value.key exists"
         ),

@@ -94,6 +94,13 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("patient show <name>"))
     );
+    let value_help = command_help(Some("value"), CommandSurface::Shell);
+    assert!(
+        value_help
+            .lines
+            .iter()
+            .any(|line| line.contains("value show <value_key>"))
+    );
     assert!(
         command_help(None, CommandSurface::Shell)
             .lines
@@ -162,6 +169,16 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
     );
     assert_eq!(parse_command("source files").unwrap(), Command::SourceFiles);
     assert_eq!(
+        parse_command("source functions").unwrap(),
+        Command::SourceFunctions
+    );
+    assert_eq!(
+        parse_command("source function run").unwrap(),
+        Command::SourceFunction {
+            function: "run".to_string(),
+        }
+    );
+    assert_eq!(
         parse_command("source view /tmp/agent.py 4 1 2").unwrap(),
         Command::SourceView {
             file: "/tmp/agent.py".to_string(),
@@ -196,6 +213,13 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         parse_command("object show ^lui:0002").unwrap(),
         Command::ObjectShow {
             object: "^lui:0002".to_string(),
+        }
+    );
+    assert_eq!(parse_command("value").unwrap(), Command::Values);
+    assert_eq!(
+        parse_command("value show memory.turn").unwrap(),
+        Command::ValueShow {
+            value_key: "memory.turn".to_string(),
         }
     );
     assert_eq!(
@@ -842,6 +866,7 @@ emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id
 emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}, "patient": {"name": "ui", "id": "patient-ui", "role": "application", "status": "running", "runtime": "pcgeos", "handles": [{"id": "h:1001", "kind": "resource", "state": ["in", "fixed"], "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "kind": "ui", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource", "address": "^lui:0002"}]}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "attached": True, "size": 8192}})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
+emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
 "#;
     let adapter =
@@ -947,6 +972,30 @@ time.sleep(0.1)
             .iter()
             .any(|line| line.contains("class=GenApplication"))
     );
+
+    let values = host.execute("value").unwrap();
+    assert!(
+        values
+            .lines
+            .iter()
+            .any(|line| line.contains("value_key=agent.state"))
+    );
+
+    let value = host.execute("value show agent.state").unwrap();
+    assert!(value.lines.iter().any(|line| line.contains("history:")));
+    assert!(
+        value
+            .lines
+            .iter()
+            .any(|line| line.contains("summary=memory updated"))
+    );
+
+    let source_functions = host.execute("source functions").unwrap();
+    assert_eq!(source_functions.lines.len(), 1);
+    assert!(source_functions.lines[0].contains("function=run"));
+    let source_function = host.execute("source function run").unwrap();
+    assert_eq!(source_function.lines.len(), 5);
+    assert!(source_function.lines.iter().all(|line| line.contains("event=")));
 
     let registers = host.execute("stack registers 0").unwrap();
     assert!(

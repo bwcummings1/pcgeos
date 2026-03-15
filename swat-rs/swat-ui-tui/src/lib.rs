@@ -20,8 +20,8 @@ use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_api::{
-    HandleSummary, LiveSessionApi, ObjectSummary, PatientSummary, ResourceSummary, StackFrame,
-    TraceInspector, WatchpointSpec,
+    HandleSummary, LiveSessionApi, ObjectSummary, ObservedValueSummary, PatientSummary,
+    ResourceSummary, SourceFunctionSummary, StackFrame, TraceInspector, WatchpointSpec,
 };
 use swat_command::{
     BreakpointConditionInput, Command, CommandOutput, CommandSurface, command_completions,
@@ -839,6 +839,34 @@ impl TuiApp {
                     format_tui_object_detail(&detail),
                 ));
             }
+            Command::Values => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect values".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let values = self.runtime.inspector().observed_values(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} observed value(s)", values.len()),
+                    values.iter().map(format_tui_observed_value_summary).collect(),
+                ));
+            }
+            Command::ValueShow { value_key } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect values".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .observed_value_detail(session_id, &value_key)?
+                    .ok_or_else(|| SwatError::new(format!("unknown observed value {value_key}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("value {}", detail.value.value_key),
+                    format_tui_observed_value_detail(&detail),
+                ));
+            }
             Command::Spans => {
                 for line in self.stack_lines()? {
                     self.push_message(line);
@@ -927,6 +955,33 @@ impl TuiApp {
                         file.file, file.event_count, functions, file.is_real_path
                     ));
                 }
+            }
+            Command::SourceFunctions => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to discover source functions".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let functions = self.runtime.inspector().source_functions(session_id)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} source function(s)", functions.len()),
+                    functions.iter().map(format_tui_source_function_summary).collect(),
+                ));
+            }
+            Command::SourceFunction { function } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect source functions".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let events = self
+                    .runtime
+                    .inspector()
+                    .events_for_source_function(session_id, &function)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("{} event(s) for source function {}", events.len(), function),
+                    events.iter().map(format_event_line).collect(),
+                ));
             }
             Command::SourceFile { file } => {
                 self.filter = EventFilter::SourceFile(file.clone());
@@ -1962,6 +2017,50 @@ fn format_tui_object_detail(detail: &swat_api::ObjectDetail) -> Vec<String> {
     ]
 }
 
+fn format_tui_observed_value_summary(value: &ObservedValueSummary) -> String {
+    format!(
+        "value_key={} events={} last_seq={} preview={}",
+        value.value_key,
+        value.event_count,
+        value
+            .last_sequence_no
+            .map(|sequence_no| sequence_no.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        value.preview.as_deref().unwrap_or("-")
+    )
+}
+
+fn format_tui_observed_value_detail(detail: &swat_api::ObservedValueDetail) -> Vec<String> {
+    let mut lines = vec![
+        format!("value_key={}", detail.value.value_key),
+        format!("events={}", detail.value.event_count),
+        format!("last_summary={}", detail.value.last_summary.as_deref().unwrap_or("-")),
+        format!("preview={}", detail.value.preview.as_deref().unwrap_or("-")),
+        "history:".to_string(),
+    ];
+    lines.extend(detail.history.iter().map(|sample| {
+        format!(
+            "event={} seq={} summary={} preview={}",
+            sample.event_id.raw(),
+            sample.sequence_no,
+            sample.summary,
+            sample.preview.as_deref().unwrap_or("-")
+        )
+    }));
+    lines
+}
+
+fn format_tui_source_function_summary(function: &SourceFunctionSummary) -> String {
+    let line_range = match (function.first_line, function.last_line) {
+        (Some(first), Some(last)) => format!("{first}..{last}"),
+        _ => "-".to_string(),
+    };
+    format!(
+        "function={} file={} events={} lines={}",
+        function.function, function.file, function.event_count, line_range
+    )
+}
+
 fn format_tui_event_patient(patient: &swat_value::PatientArtifactRecord) -> String {
     format!(
         "patient={} handles={} resources={} objects={}",
@@ -2195,6 +2294,7 @@ def emit(record):
 
 emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-11", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "patient": {"name": "ui", "handles": [{"id": "h:1001", "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource"}]}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-11", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run", "handle": {"id": "h:1001", "patient": "ui", "resource": "AppResource", "attached": True}})
+emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
 "#;
 
@@ -2229,6 +2329,20 @@ time.sleep(0.1)
             app.messages
                 .iter()
                 .any(|line| line.contains("class=GenApplication"))
+        );
+
+        app.execute_command("value").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("value_key=agent.state"))
+        );
+
+        app.execute_command("source functions").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("function=run"))
         );
     }
 

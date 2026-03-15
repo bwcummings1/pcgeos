@@ -138,6 +138,7 @@ def emit(record):
 
 emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}}, "patient": {"name": "ui", "handles": [{"id": "h:1001", "resource": "AppResource", "objects": [{"id": "^lui:0002", "class": "GenApplication"}]}], "resources": [{"name": "AppResource", "handle": "h:1001", "objects": ["^lui:0002"]}], "objects": [{"id": "^lui:0002", "class": "GenApplication", "handle": "h:1001", "resource": "AppResource"}]}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
 time.sleep(0.1)
 "#;
 
@@ -207,6 +208,22 @@ time.sleep(0.1)
     assert_eq!(
         host.eval_string(r#"ctx.object_class("^lui:0002")"#).unwrap(),
         "GenApplication"
+    );
+    assert_eq!(host.eval_i64("ctx.value_count()").unwrap(), 1);
+    assert_eq!(host.eval_string("ctx.value_key(0)").unwrap(), "agent.state");
+    assert_eq!(
+        host.eval_i64(r#"ctx.value_event_count("agent.state")"#).unwrap(),
+        1
+    );
+    assert_eq!(host.eval_i64("ctx.source_function_count()").unwrap(), 1);
+    assert_eq!(
+        host.eval_string("ctx.source_function_name(0)").unwrap(),
+        "run"
+    );
+    assert_eq!(
+        host.eval_i64(r#"ctx.source_function_event_count("run")"#)
+            .unwrap(),
+        2
     );
 }
 

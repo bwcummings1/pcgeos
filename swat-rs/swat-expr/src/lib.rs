@@ -14,7 +14,12 @@ pub enum QueryField {
     BoundaryId,
     SpanId,
     ValueKey,
+    Patient,
+    Handle,
+    Resource,
+    Object,
     SourceFile,
+    SourceLine,
     SourceFunction,
 }
 
@@ -185,7 +190,12 @@ fn format_query_field(field: &QueryField) -> &'static str {
         QueryField::BoundaryId => "boundary",
         QueryField::SpanId => "span",
         QueryField::ValueKey => "value.key",
+        QueryField::Patient => "patient",
+        QueryField::Handle => "handle",
+        QueryField::Resource => "resource",
+        QueryField::Object => "object",
         QueryField::SourceFile => "source.file",
+        QueryField::SourceLine => "source.line",
         QueryField::SourceFunction => "source.function",
     }
 }
@@ -271,9 +281,34 @@ fn query_field_values<S: SwatStore + ?Sized>(
             }
             _ => Vec::new(),
         },
+        QueryField::Patient => {
+            let mut values = Vec::new();
+            extend_typed_entity_values(store, event, field, &mut values);
+            values
+        }
+        QueryField::Handle => {
+            let mut values = Vec::new();
+            extend_typed_entity_values(store, event, field, &mut values);
+            values
+        }
+        QueryField::Resource => {
+            let mut values = Vec::new();
+            extend_typed_entity_values(store, event, field, &mut values);
+            values
+        }
+        QueryField::Object => {
+            let mut values = Vec::new();
+            extend_typed_entity_values(store, event, field, &mut values);
+            values
+        }
         QueryField::SourceFile => {
             let mut values = Vec::new();
             extend_json_path_values(store, event, "$.file", &mut values);
+            values
+        }
+        QueryField::SourceLine => {
+            let mut values = Vec::new();
+            extend_json_path_values(store, event, "$.line", &mut values);
             values
         }
         QueryField::SourceFunction => {
@@ -304,6 +339,106 @@ fn extend_json_path_values<S: SwatStore + ?Sized>(
             continue;
         };
         push_unique(values, value);
+    }
+}
+
+fn extend_typed_entity_values<S: SwatStore + ?Sized>(
+    store: &S,
+    event: &EventEnvelope,
+    field: &QueryField,
+    values: &mut Vec<QueriedValue>,
+) {
+    for artifact_ref in &event.artifact_refs {
+        let Some(artifact) = store.artifact(artifact_ref.artifact_id) else {
+            continue;
+        };
+        let Ok(decoded) = decode_artifact(artifact) else {
+            continue;
+        };
+        let typed = decoded.typed_entities();
+        match field {
+            QueryField::Patient => {
+                for patient in typed.patients {
+                    push_unique(values, QueriedValue::String(patient.key));
+                }
+                for handle in typed.handles {
+                    if let Some(patient) = handle.patient {
+                        push_unique(values, QueriedValue::String(patient));
+                    }
+                }
+                for resource in typed.resources {
+                    if let Some(patient) = resource.patient {
+                        push_unique(values, QueriedValue::String(patient));
+                    }
+                }
+                for object in typed.objects {
+                    if let Some(patient) = object.patient {
+                        push_unique(values, QueriedValue::String(patient));
+                    }
+                }
+            }
+            QueryField::Handle => {
+                for patient in typed.patients {
+                    for handle in patient.handle_ids {
+                        push_unique(values, QueriedValue::String(handle));
+                    }
+                }
+                for handle in typed.handles {
+                    push_unique(values, QueriedValue::String(handle.key));
+                }
+                for resource in typed.resources {
+                    if let Some(handle) = resource.handle {
+                        push_unique(values, QueriedValue::String(handle));
+                    }
+                }
+                for object in typed.objects {
+                    if let Some(handle) = object.handle {
+                        push_unique(values, QueriedValue::String(handle));
+                    }
+                }
+            }
+            QueryField::Resource => {
+                for patient in typed.patients {
+                    for resource in patient.resource_names {
+                        push_unique(values, QueriedValue::String(resource));
+                    }
+                }
+                for handle in typed.handles {
+                    if let Some(resource) = handle.resource {
+                        push_unique(values, QueriedValue::String(resource));
+                    }
+                }
+                for resource in typed.resources {
+                    push_unique(values, QueriedValue::String(resource.key));
+                }
+                for object in typed.objects {
+                    if let Some(resource) = object.resource {
+                        push_unique(values, QueriedValue::String(resource));
+                    }
+                }
+            }
+            QueryField::Object => {
+                for patient in typed.patients {
+                    for object in patient.object_ids {
+                        push_unique(values, QueriedValue::String(object));
+                    }
+                }
+                for handle in typed.handles {
+                    for object in handle.object_ids {
+                        push_unique(values, QueriedValue::String(object));
+                    }
+                }
+                for resource in typed.resources {
+                    for object in resource.object_ids {
+                        push_unique(values, QueriedValue::String(object));
+                    }
+                }
+                for object in typed.objects {
+                    push_unique(values, QueriedValue::String(object.key));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -518,7 +653,12 @@ fn parse_query_field(name: &str) -> SwatResult<QueryField> {
         "boundary" | "boundary.id" => Ok(QueryField::BoundaryId),
         "span" | "span.id" => Ok(QueryField::SpanId),
         "value.key" => Ok(QueryField::ValueKey),
+        "patient" => Ok(QueryField::Patient),
+        "handle" => Ok(QueryField::Handle),
+        "resource" => Ok(QueryField::Resource),
+        "object" => Ok(QueryField::Object),
         "source.file" => Ok(QueryField::SourceFile),
+        "source.line" => Ok(QueryField::SourceLine),
         "source.function" => Ok(QueryField::SourceFunction),
         _ => Err(SwatError::new(format!("unknown query field '{name}'"))),
     }
@@ -531,6 +671,10 @@ fn field_supports_contains(field: &QueryField) -> bool {
             | QueryField::CorrelationId
             | QueryField::SpanId
             | QueryField::ValueKey
+            | QueryField::Patient
+            | QueryField::Handle
+            | QueryField::Resource
+            | QueryField::Object
             | QueryField::SourceFile
             | QueryField::SourceFunction
     )

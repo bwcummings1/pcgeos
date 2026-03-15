@@ -10,8 +10,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use swat_api::{
     BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
-    FrameLocal, FrameRegister, HandleSummary, LiveSessionApi, ObjectSummary, PatientSummary,
-    ResourceSummary, StackFrame, TraceInspector, WatchpointSpec, WatchpointSummary,
+    FrameLocal, FrameRegister, HandleSummary, LiveSessionApi, ObjectSummary,
+    ObservedValueSummary, PatientSummary, ResourceSummary, SourceFunctionSummary, StackFrame,
+    TraceInspector, WatchpointSpec, WatchpointSummary,
 };
 use swat_control::{
     StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
@@ -109,6 +110,10 @@ pub enum Command {
     ObjectShow {
         object: String,
     },
+    Values,
+    ValueShow {
+        value_key: String,
+    },
     Breakpoints,
     BreakpointShow {
         trigger_id: TriggerId,
@@ -198,6 +203,10 @@ pub enum Command {
         after: usize,
     },
     SourceFiles,
+    SourceFunctions,
+    SourceFunction {
+        function: String,
+    },
     SourceFile {
         file: String,
     },
@@ -286,6 +295,8 @@ impl CommandHost {
             Command::ResourceShow { resource } => self.show_resource(&resource),
             Command::Objects => self.list_objects(),
             Command::ObjectShow { object } => self.show_object(&object),
+            Command::Values => self.list_values(),
+            Command::ValueShow { value_key } => self.show_value(&value_key),
             Command::Breakpoints => self.list_breakpoints(),
             Command::BreakpointShow { trigger_id } => self.show_breakpoint(trigger_id),
             Command::BreakpointGroups => self.list_breakpoint_groups(),
@@ -342,6 +353,8 @@ impl CommandHost {
                 after,
             } => self.show_source(event_id, before, after),
             Command::SourceFiles => self.list_source_files(),
+            Command::SourceFunctions => self.list_source_functions(),
+            Command::SourceFunction { function } => self.list_source_function_events(&function),
             Command::SourceFile { file } => self.list_source_file_events(&file),
             Command::SourceView {
                 file,
@@ -948,6 +961,59 @@ impl CommandHost {
             ));
         }
         Ok(CommandOutput::new(format!("object {}", detail.object.key), lines))
+    }
+
+    fn list_values(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let values = self.inspector().observed_values(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} observed value(s)", values.len()),
+            values.iter().map(format_observed_value_summary).collect(),
+        ))
+    }
+
+    fn show_value(&self, value_key: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .observed_value_detail(session_id, value_key)?
+            .ok_or_else(|| SwatError::new(format!("unknown observed value {value_key}")))?;
+        let mut lines = vec![
+            format!("value_key={}", detail.value.value_key),
+            format!("events={}", detail.value.event_count),
+            format!(
+                "last_event={}",
+                detail
+                    .value
+                    .last_event_id
+                    .map(|event_id| event_id.raw().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "last_seq={}",
+                detail
+                    .value
+                    .last_sequence_no
+                    .map(|sequence_no| sequence_no.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "last_summary={}",
+                detail.value.last_summary.as_deref().unwrap_or("-")
+            ),
+            format!("preview={}", detail.value.preview.as_deref().unwrap_or("-")),
+            "history:".to_string(),
+        ];
+        lines.extend(detail.history.iter().map(|sample| {
+            format!(
+                "event={} seq={} summary={} preview={}",
+                sample.event_id.raw(),
+                sample.sequence_no,
+                sample.summary,
+                sample.preview.as_deref().unwrap_or("-")
+            )
+        }));
+        Ok(CommandOutput::new(format!("value {}", value_key), lines))
     }
 
     fn list_triggers(&self) -> CommandOutput {
@@ -2085,6 +2151,15 @@ impl CommandHost {
         ))
     }
 
+    fn list_source_function_events(&self, function: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let events = self.inspector().events_for_source_function(session_id, function)?;
+        Ok(CommandOutput::new(
+            format!("{} event(s) for source function {}", events.len(), function),
+            events.iter().map(format_event_line).collect(),
+        ))
+    }
+
     fn list_source_files(&self) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let files = self.inspector().source_files(session_id)?;
@@ -2107,6 +2182,18 @@ impl CommandHost {
                         file.file, file.event_count, line_range, functions, file.is_real_path
                     )
                 })
+                .collect(),
+        ))
+    }
+
+    fn list_source_functions(&self) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let functions = self.inspector().source_functions(session_id)?;
+        Ok(CommandOutput::new(
+            format!("{} source function(s)", functions.len()),
+            functions
+                .iter()
+                .map(format_source_function_summary)
                 .collect(),
         ))
     }
@@ -2316,6 +2403,12 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     if let Some(rest) = trimmed.strip_prefix("object ") {
         return parse_entity_show(rest, "object").map(|object| Command::ObjectShow { object });
     }
+    if matches!(trimmed, "value" | "values") {
+        return Ok(Command::Values);
+    }
+    if let Some(rest) = trimmed.strip_prefix("value ") {
+        return parse_entity_show(rest, "value").map(|value_key| Command::ValueShow { value_key });
+    }
     if let Some(rest) = trimmed.strip_prefix("correlation ") {
         return Ok(Command::Correlation {
             correlation_id: rest.trim().to_string(),
@@ -2381,11 +2474,23 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         if rest == "files" {
             return Ok(Command::SourceFiles);
         }
+        if rest == "functions" {
+            return Ok(Command::SourceFunctions);
+        }
         if let Some(rest) = rest.strip_prefix("show ") {
             return parse_source_show(rest);
         }
         if let Some(rest) = rest.strip_prefix("view ") {
             return parse_source_view(rest);
+        }
+        if let Some(rest) = rest.strip_prefix("function ") {
+            let function = rest.trim();
+            if function.is_empty() {
+                return Err(SwatError::new("source function requires a name"));
+            }
+            return Ok(Command::SourceFunction {
+                function: function.to_string(),
+            });
         }
         if let Some(rest) = rest.strip_prefix("file ") {
             let file = rest.trim();
@@ -3255,6 +3360,34 @@ fn format_object_summary(object: &ObjectSummary) -> String {
         object.resource.as_deref().unwrap_or("-"),
         join_or_dash(&object.state_flags),
         object.event_count
+    )
+}
+
+fn format_observed_value_summary(value: &ObservedValueSummary) -> String {
+    format!(
+        "value_key={} events={} last_event={} last_seq={} preview={}",
+        value.value_key,
+        value.event_count,
+        value
+            .last_event_id
+            .map(|event_id| event_id.raw().to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        value
+            .last_sequence_no
+            .map(|sequence_no| sequence_no.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        value.preview.as_deref().unwrap_or("-")
+    )
+}
+
+fn format_source_function_summary(function: &SourceFunctionSummary) -> String {
+    let line_range = match (function.first_line, function.last_line) {
+        (Some(first), Some(last)) => format!("{first}..{last}"),
+        _ => "-".to_string(),
+    };
+    format!(
+        "function={} file={} events={} lines={}",
+        function.function, function.file, function.event_count, line_range
     )
 }
 

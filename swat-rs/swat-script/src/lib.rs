@@ -370,6 +370,66 @@ impl ScriptContext {
             .unwrap_or_default()
     }
 
+    pub fn value_count(&mut self) -> i64 {
+        self.inspector()
+            .observed_values(self.session_id)
+            .map(|values| values.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn value_key(&mut self, value_index: i64) -> String {
+        if value_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .observed_values(self.session_id)
+            .ok()
+            .and_then(|values| {
+                values
+                    .get(value_index as usize)
+                    .map(|value| value.value_key.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn value_event_count(&mut self, value_key: &str) -> i64 {
+        self.inspector()
+            .observed_value_detail(self.session_id, value_key)
+            .ok()
+            .flatten()
+            .map(|detail| detail.value.event_count as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn source_function_count(&mut self) -> i64 {
+        self.inspector()
+            .source_functions(self.session_id)
+            .map(|functions| functions.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn source_function_name(&mut self, function_index: i64) -> String {
+        if function_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .source_functions(self.session_id)
+            .ok()
+            .and_then(|functions| {
+                functions
+                    .get(function_index as usize)
+                    .map(|function| function.function.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn source_function_event_count(&mut self, function: &str) -> i64 {
+        self.inspector()
+            .events_for_source_function(self.session_id, function)
+            .map(|events| events.len() as i64)
+            .unwrap_or(0)
+    }
+
     pub fn source_file_count(&mut self) -> i64 {
         self.inspector()
             .source_files(self.session_id)
@@ -458,6 +518,15 @@ impl ScriptHost {
         engine.register_fn("object_count", ScriptContext::object_count);
         engine.register_fn("object_identity", ScriptContext::object_identity);
         engine.register_fn("object_class", ScriptContext::object_class);
+        engine.register_fn("value_count", ScriptContext::value_count);
+        engine.register_fn("value_key", ScriptContext::value_key);
+        engine.register_fn("value_event_count", ScriptContext::value_event_count);
+        engine.register_fn("source_function_count", ScriptContext::source_function_count);
+        engine.register_fn("source_function_name", ScriptContext::source_function_name);
+        engine.register_fn(
+            "source_function_event_count",
+            ScriptContext::source_function_event_count,
+        );
         engine.register_fn("source_file_count", ScriptContext::source_file_count);
         engine.register_fn(
             "source_file_event_count",
@@ -887,6 +956,63 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
             .object_detail(session_id, object)?
             .and_then(|detail| detail.object.class_name)
             .unwrap_or_default())
+    }
+
+    pub fn value_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().observed_values(session_id)?.len() as i64)
+    }
+
+    pub fn value_key(&mut self, value_index: i64) -> SwatResult<String> {
+        if value_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .observed_values(session_id)?
+            .get(value_index as usize)
+            .map(|value| value.value_key.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn value_event_count(&mut self, value_key: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .observed_value_detail(session_id, value_key)?
+            .map(|detail| detail.value.event_count as i64)
+            .unwrap_or(0))
+    }
+
+    pub fn source_function_count(&mut self) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self.api().inspector().source_functions(session_id)?.len() as i64)
+    }
+
+    pub fn source_function_name(&mut self, function_index: i64) -> SwatResult<String> {
+        if function_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .source_functions(session_id)?
+            .get(function_index as usize)
+            .map(|function| function.function.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn source_function_event_count(&mut self, function: &str) -> SwatResult<i64> {
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .events_for_source_function(session_id, function)?
+            .len() as i64)
     }
 
     pub fn source_file_count(&mut self) -> SwatResult<i64> {

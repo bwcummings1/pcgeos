@@ -187,6 +187,20 @@ time.sleep(0.1)
     assert_eq!(source_files[0].last_line, Some(21));
     assert_eq!(source_files[0].functions, vec!["run".to_string()]);
     assert!(!source_files[0].is_real_path);
+    let source_functions = inspector.source_functions(session_id).unwrap();
+    assert_eq!(source_functions.len(), 1);
+    assert_eq!(source_functions[0].function, "run");
+    assert_eq!(source_functions[0].file, "/tmp/agent.py");
+    assert_eq!(source_functions[0].event_count, 4);
+    assert_eq!(source_functions[0].first_line, Some(10));
+    assert_eq!(source_functions[0].last_line, Some(21));
+    assert_eq!(
+        inspector
+            .events_for_source_function(session_id, "run")
+            .unwrap()
+            .len(),
+        4
+    );
     assert_eq!(
         inspector
             .events_for_value_key(session_id, "agent.state")
@@ -194,6 +208,22 @@ time.sleep(0.1)
             .len(),
         1
     );
+    let values = inspector.observed_values(session_id).unwrap();
+    assert!(values.iter().any(|value| {
+        value.value_key == "agent.state"
+            && value.event_count == 1
+            && value.last_summary.as_deref() == Some("memory updated")
+    }));
+    let value_detail = inspector
+        .observed_value_detail(session_id, "agent.state")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value_detail.history.len(), 1);
+    assert!(value_detail.history[0]
+        .preview
+        .as_deref()
+        .unwrap_or_default()
+        .contains("memory.turn"));
     assert_eq!(inspector.events_for_patient(session_id, "ui").unwrap().len(), 2);
     assert_eq!(
         inspector.events_for_handle(session_id, "h:1001").unwrap().len(),

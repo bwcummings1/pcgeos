@@ -105,6 +105,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0030-shared-advanced-breakpoint-surfaces.md`
 - `docs/adrs/0031-typed-frame-locals-and-registers.md`
 - `docs/adrs/0032-typed-target-entity-inspection.md`
+- `docs/adrs/0033-debugger-native-query-value-and-source-traversals.md`
 
 ## Phase 1 status
 
@@ -175,7 +176,8 @@ The first typed value crate is also now in the workspace:
 This crate decodes artifact-backed values as UTF-8 text, JSON, or binary data,
 supports simple JSON-path querying over decoded JSON payloads, and now exposes
 operator-friendly compact previews plus multiline detail rendering for shell and
-future TUI surfaces.
+future TUI surfaces. It now also feeds typed entity extraction and value-history
+previews into the higher inspection layers.
 
 The first schema crate is also now in the workspace:
 
@@ -190,9 +192,10 @@ The first expression/query crate is also now in the workspace:
 - `swat-expr`
 
 This crate parses a semantic query language for event kind, event id, sequence,
-correlation id, boundary id, span id, value key, source file/function, summary
-text, artifact text, and artifact JSON-path predicates, including `not`. Both
-`swat-control` and `swat-api` now use it.
+correlation id, boundary id, span id, value key, patient/handle/resource/object
+identity, source file/line/function, summary text, artifact text, and artifact
+JSON-path predicates, including `not`. Both `swat-control` and `swat-api` now
+use it.
 
 The first source-mapping crate is also now in the workspace:
 
@@ -228,7 +231,8 @@ reporting for grouped breakpoint policies, and first-class watchpoint
 inspection/addition helpers for value/time/lifecycle-gated state changes. The
 same API now also projects typed frame inspections with first-class locals and
 registers plus typed patient/handle/resource/object summaries and details
-extracted from structured modern-target artifacts.
+extracted from structured modern-target artifacts, along with observed-value
+histories and function-oriented source traversal.
 
 The first resolver crate is also now in the workspace:
 
@@ -239,7 +243,8 @@ span ids, tool/model names, planner names, state keys, and source names, plus
 cross-entity relation edges and correlation-group views for common runtime
 investigation flows. It now also indexes typed patient, handle, resource, and
 object identities carried by structured artifacts so relation traversals stay
-debugger-shaped instead of trace-only.
+debugger-shaped instead of trace-only, while also supporting source-function
+lookups through the same resolver graph.
 
 The first live command runtime is also now in the workspace:
 
@@ -252,7 +257,8 @@ including named predicates, group policies, persisted watchpoint definitions,
 load/time-gated watchpoint commands, and typed `stack locals` / `stack
 registers` workflows on the shared public API. It now also exposes typed
 `patient`, `handle`, `resource`, and `object` inspection commands over that
-same shared model.
+same shared model, plus direct `value` history inspection and function-oriented
+source traversal.
 
 ## Phase 4 status
 
@@ -272,16 +278,18 @@ TUI discovery, first debugger-family aliases for `stack`, `source`, and
 source-file discovery plus direct file viewing on the shared source layer,
 typed `stack locals` / `stack registers` inspection, typed
 `patient`/`handle`/`resource`/`object` inspection, status/session
-introspection, richer artifact rendering, source failure reporting, and a
-runnable CLI shell.
+introspection, richer artifact rendering, observed `value` history traversal,
+function-oriented source traversal, source failure reporting, and a runnable
+CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
 with an event list, stack/entity context pane, source preview, artifact preview,
 live command entry, and support for mock, local, and agent runtimes. It also
 supports shared breakpoint/watchpoint command execution, typed frame-local and
 frame-register inspection commands, typed patient/handle/resource/object
-inspection commands plus event-pane entity projections, and a headless render
-mode for demos and validation.
+inspection commands plus event-pane entity projections, shared `value` history
+and `source functions` workflows, and a headless render mode for demos and
+validation.
 
 ## Demo
 

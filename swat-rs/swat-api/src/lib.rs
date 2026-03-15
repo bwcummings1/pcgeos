@@ -212,6 +212,39 @@ pub struct SourceFileSummary {
     pub is_real_path: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFunctionSummary {
+    pub function: String,
+    pub file: String,
+    pub event_count: usize,
+    pub first_line: Option<usize>,
+    pub last_line: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedValueSample {
+    pub event_id: EventId,
+    pub sequence_no: u64,
+    pub summary: String,
+    pub preview: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedValueSummary {
+    pub value_key: String,
+    pub event_count: usize,
+    pub last_event_id: Option<EventId>,
+    pub last_sequence_no: Option<u64>,
+    pub last_summary: Option<String>,
+    pub preview: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedValueDetail {
+    pub value: ObservedValueSummary,
+    pub history: Vec<ObservedValueSample>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BreakpointState {
     Enabled,
@@ -837,6 +870,14 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         TraceResolver::new(self.store).events_for_source_file(session_id, file)
     }
 
+    pub fn events_for_source_function(
+        &self,
+        session_id: SessionId,
+        function: &str,
+    ) -> SwatResult<Vec<EventEnvelope>> {
+        TraceResolver::new(self.store).events_for_function(session_id, function)
+    }
+
     pub fn events_for_patient(
         &self,
         session_id: SessionId,
@@ -901,6 +942,81 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
             .collect())
     }
 
+    pub fn source_functions(&self, session_id: SessionId) -> SwatResult<Vec<SourceFunctionSummary>> {
+        let mut functions = BTreeMap::<(String, String), SourceFunctionSummaryBuilder>::new();
+
+        for event in self.session_events(session_id) {
+            let Some(location) = extract_event_source_location(self.store, &event)? else {
+                continue;
+            };
+            let Some(function) = location.function.clone() else {
+                continue;
+            };
+            let entry = functions
+                .entry((function.clone(), location.file.clone()))
+                .or_insert_with(|| SourceFunctionSummaryBuilder::new(&function, &location.file));
+            entry.event_count += 1;
+            entry.first_line = Some(
+                entry
+                    .first_line
+                    .map_or(location.line, |line| line.min(location.line)),
+            );
+            entry.last_line = Some(
+                entry
+                    .last_line
+                    .map_or(location.line, |line| line.max(location.line)),
+            );
+        }
+
+        Ok(functions
+            .into_values()
+            .map(SourceFunctionSummaryBuilder::build)
+            .collect())
+    }
+
+    pub fn observed_values(&self, session_id: SessionId) -> SwatResult<Vec<ObservedValueSummary>> {
+        let mut values = BTreeMap::<String, ObservedValueBuilder>::new();
+
+        for event in self.session_events(session_id) {
+            let EventPayload::Value { value_key, summary } = &event.payload else {
+                continue;
+            };
+            let preview = self
+                .artifact_presentations(&event, 72)?
+                .into_iter()
+                .next()
+                .map(|presentation| presentation.preview);
+            values
+                .entry(value_key.clone())
+                .or_insert_with(|| ObservedValueBuilder::new(value_key))
+                .observe(
+                    ObservedValueSample {
+                        event_id: event.event_id,
+                        sequence_no: event.sequence_no,
+                        summary: summary.clone(),
+                        preview,
+                    },
+                );
+        }
+
+        Ok(values
+            .into_values()
+            .map(ObservedValueBuilder::build)
+            .collect())
+    }
+
+    pub fn observed_value_detail(
+        &self,
+        session_id: SessionId,
+        value_key: &str,
+    ) -> SwatResult<Option<ObservedValueDetail>> {
+        let mut values = self
+            .observed_values_with_history(session_id)?
+            .into_iter()
+            .find(|detail| detail.value.value_key == value_key);
+        Ok(values.take())
+    }
+
     pub fn source_file_view(
         &self,
         file: &str,
@@ -962,6 +1078,38 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         boundary_id: BoundaryId,
     ) -> ReplayPlan {
         ReplayPlan::for_boundary(&self.session_events(session_id), boundary_id)
+    }
+
+    fn observed_values_with_history(
+        &self,
+        session_id: SessionId,
+    ) -> SwatResult<Vec<ObservedValueDetail>> {
+        let mut values = BTreeMap::<String, ObservedValueBuilder>::new();
+
+        for event in self.session_events(session_id) {
+            let EventPayload::Value { value_key, summary } = &event.payload else {
+                continue;
+            };
+            let preview = self
+                .artifact_presentations(&event, 72)?
+                .into_iter()
+                .next()
+                .map(|presentation| presentation.preview);
+            values
+                .entry(value_key.clone())
+                .or_insert_with(|| ObservedValueBuilder::new(value_key))
+                .observe(ObservedValueSample {
+                    event_id: event.event_id,
+                    sequence_no: event.sequence_no,
+                    summary: summary.clone(),
+                    preview,
+                });
+        }
+
+        Ok(values
+            .into_values()
+            .map(ObservedValueBuilder::build_detail)
+            .collect())
     }
 
     fn typed_entity_index(&self, session_id: SessionId) -> SwatResult<TypedEntityIndex> {
@@ -1789,6 +1937,82 @@ impl SourceFileSummaryBuilder {
             last_line: self.last_line,
             functions: self.functions.into_iter().collect(),
             is_real_path: is_real_source_path(&self.file),
+        }
+    }
+}
+
+struct SourceFunctionSummaryBuilder {
+    function: String,
+    file: String,
+    event_count: usize,
+    first_line: Option<usize>,
+    last_line: Option<usize>,
+}
+
+impl SourceFunctionSummaryBuilder {
+    fn new(function: &str, file: &str) -> Self {
+        Self {
+            function: function.to_string(),
+            file: file.to_string(),
+            event_count: 0,
+            first_line: None,
+            last_line: None,
+        }
+    }
+
+    fn build(self) -> SourceFunctionSummary {
+        SourceFunctionSummary {
+            function: self.function,
+            file: self.file,
+            event_count: self.event_count,
+            first_line: self.first_line,
+            last_line: self.last_line,
+        }
+    }
+}
+
+struct ObservedValueBuilder {
+    value_key: String,
+    history: Vec<ObservedValueSample>,
+}
+
+impl ObservedValueBuilder {
+    fn new(value_key: &str) -> Self {
+        Self {
+            value_key: value_key.to_string(),
+            history: Vec::new(),
+        }
+    }
+
+    fn observe(&mut self, sample: ObservedValueSample) {
+        self.history.push(sample);
+    }
+
+    fn build(self) -> ObservedValueSummary {
+        let last = self.history.last();
+        ObservedValueSummary {
+            value_key: self.value_key,
+            event_count: self.history.len(),
+            last_event_id: last.map(|sample| sample.event_id),
+            last_sequence_no: last.map(|sample| sample.sequence_no),
+            last_summary: last.map(|sample| sample.summary.clone()),
+            preview: last.and_then(|sample| sample.preview.clone()),
+        }
+    }
+
+    fn build_detail(self) -> ObservedValueDetail {
+        let last = self.history.last();
+        let summary = ObservedValueSummary {
+            value_key: self.value_key,
+            event_count: self.history.len(),
+            last_event_id: last.map(|sample| sample.event_id),
+            last_sequence_no: last.map(|sample| sample.sequence_no),
+            last_summary: last.map(|sample| sample.summary.clone()),
+            preview: last.and_then(|sample| sample.preview.clone()),
+        };
+        ObservedValueDetail {
+            value: summary,
+            history: self.history,
         }
     }
 }
