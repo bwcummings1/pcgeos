@@ -324,7 +324,11 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
     ) -> SwatResult<TriggerId> {
         let session_id = self.session_id;
         let parsed = parse_expression(expr)?;
-        let mut trigger = Trigger::new(name, TriggerPredicate::Expr(parsed), vec![TriggerAction::PauseTarget]);
+        let mut trigger = Trigger::new(
+            name,
+            TriggerPredicate::Expr(parsed),
+            vec![TriggerAction::PauseTarget],
+        );
         if fire_once {
             trigger = trigger.fire_once();
         }
@@ -353,11 +357,6 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
     }
 
     fn api(&mut self) -> LiveSessionApi<'_, A, S> {
-        LiveSessionApi::new(
-            self.manager,
-            self.adapter,
-            self.store,
-            self.trigger_engine,
-        )
+        LiveSessionApi::new(self.manager, self.adapter, self.store, self.trigger_engine)
     }
 }

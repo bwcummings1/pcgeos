@@ -8,18 +8,18 @@ use swat_core::{
     PolicyVerdict, SessionId, SnapshotId, SnapshotRecord, SwatError, SwatResult, TargetAdapter,
     TriggerId,
 };
-use swat_expr::{evaluate_expression, parse_expression, QueryExpr};
+use swat_expr::{QueryExpr, evaluate_expression, format_expression, parse_expression};
 use swat_replay::ReplayPlan;
 use swat_resolver::{
     CorrelationGroup, EntityRef, EntityRelation, ResolvedEntity, TraceIndex, TraceResolver,
 };
 use swat_session::{ControlReport, ReplayApplyReport, SessionManager};
 use swat_source::{
-    extract_event_source_location, inspect_event_source, is_real_source_path, load_source_snippet,
-    resolve_event_source, SourceInspection, SourceLocation, SourceSnippet,
+    SourceInspection, SourceLocation, SourceSnippet, extract_event_source_location,
+    inspect_event_source, is_real_source_path, load_source_snippet, resolve_event_source,
 };
 use swat_store::SwatStore;
-use swat_value::{decode_event_artifacts, DecodedValue, QueriedValue, ValuePresentation};
+use swat_value::{DecodedValue, QueriedValue, ValuePresentation, decode_event_artifacts};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceMatch {
@@ -64,6 +64,117 @@ pub struct SourceFileSummary {
     pub last_line: Option<usize>,
     pub functions: Vec<String>,
     pub is_real_path: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BreakpointState {
+    Enabled,
+    Disabled,
+}
+
+impl BreakpointState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BreakpointLifetime {
+    Persistent,
+    Once,
+}
+
+impl BreakpointLifetime {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Persistent => "persistent",
+            Self::Once => "once",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BreakpointDisposition {
+    Passive,
+    Pause,
+    Snapshot,
+    Mixed,
+}
+
+impl BreakpointDisposition {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Passive => "passive",
+            Self::Pause => "pause",
+            Self::Snapshot => "snapshot",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BreakpointActivity {
+    NeverHit,
+    Hit,
+}
+
+impl BreakpointActivity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeverHit => "never-hit",
+            Self::Hit => "hit",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BreakpointGroupKind {
+    State,
+    Lifetime,
+    Disposition,
+    Activity,
+}
+
+impl BreakpointGroupKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Lifetime => "lifetime",
+            Self::Disposition => "disposition",
+            Self::Activity => "activity",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointSummary {
+    pub trigger_id: TriggerId,
+    pub name: String,
+    pub predicate: String,
+    pub actions: Vec<String>,
+    pub state: BreakpointState,
+    pub lifetime: BreakpointLifetime,
+    pub disposition: BreakpointDisposition,
+    pub activity: BreakpointActivity,
+    pub hit_count: u64,
+    pub last_hit_event_id: Option<EventId>,
+    pub last_hit_sequence_no: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointDetail {
+    pub breakpoint: BreakpointSummary,
+    pub last_hit_event: Option<EventEnvelope>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BreakpointGroup {
+    pub kind: BreakpointGroupKind,
+    pub label: String,
+    pub breakpoints: Vec<BreakpointSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -605,6 +716,90 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
         self.trigger_engine.triggers()
     }
 
+    pub fn breakpoint_summaries(&self) -> Vec<BreakpointSummary> {
+        self.trigger_engine
+            .triggers()
+            .iter()
+            .map(build_breakpoint_summary)
+            .collect()
+    }
+
+    pub fn breakpoint_detail(&self, trigger_id: TriggerId) -> Option<BreakpointDetail> {
+        let breakpoint = self
+            .trigger_engine
+            .triggers()
+            .iter()
+            .find(|trigger| trigger.trigger_id == trigger_id)
+            .map(build_breakpoint_summary)?;
+        let last_hit_event = breakpoint
+            .last_hit_event_id
+            .and_then(|event_id| self.inspector().event_by_id(event_id));
+        Some(BreakpointDetail {
+            breakpoint,
+            last_hit_event,
+        })
+    }
+
+    pub fn breakpoint_groups(&self) -> Vec<BreakpointGroup> {
+        let breakpoints = self.breakpoint_summaries();
+        let mut groups = Vec::new();
+        groups.extend(select_breakpoint_groups(
+            &breakpoints,
+            BreakpointGroupKind::State,
+            &[
+                ("enabled", |breakpoint: &BreakpointSummary| {
+                    breakpoint.state == BreakpointState::Enabled
+                }),
+                ("disabled", |breakpoint: &BreakpointSummary| {
+                    breakpoint.state == BreakpointState::Disabled
+                }),
+            ],
+        ));
+        groups.extend(select_breakpoint_groups(
+            &breakpoints,
+            BreakpointGroupKind::Lifetime,
+            &[
+                ("persistent", |breakpoint: &BreakpointSummary| {
+                    breakpoint.lifetime == BreakpointLifetime::Persistent
+                }),
+                ("once", |breakpoint: &BreakpointSummary| {
+                    breakpoint.lifetime == BreakpointLifetime::Once
+                }),
+            ],
+        ));
+        groups.extend(select_breakpoint_groups(
+            &breakpoints,
+            BreakpointGroupKind::Disposition,
+            &[
+                ("pause", |breakpoint: &BreakpointSummary| {
+                    breakpoint.disposition == BreakpointDisposition::Pause
+                }),
+                ("snapshot", |breakpoint: &BreakpointSummary| {
+                    breakpoint.disposition == BreakpointDisposition::Snapshot
+                }),
+                ("mixed", |breakpoint: &BreakpointSummary| {
+                    breakpoint.disposition == BreakpointDisposition::Mixed
+                }),
+                ("passive", |breakpoint: &BreakpointSummary| {
+                    breakpoint.disposition == BreakpointDisposition::Passive
+                }),
+            ],
+        ));
+        groups.extend(select_breakpoint_groups(
+            &breakpoints,
+            BreakpointGroupKind::Activity,
+            &[
+                ("hit", |breakpoint: &BreakpointSummary| {
+                    breakpoint.activity == BreakpointActivity::Hit
+                }),
+                ("never-hit", |breakpoint: &BreakpointSummary| {
+                    breakpoint.activity == BreakpointActivity::NeverHit
+                }),
+            ],
+        ));
+        groups
+    }
+
     pub fn control(
         &mut self,
         session_id: SessionId,
@@ -781,6 +976,135 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveSessionApi<'a, A,
             },
         )
     }
+}
+
+fn build_breakpoint_summary(trigger: &Trigger) -> BreakpointSummary {
+    let actions = trigger
+        .actions
+        .iter()
+        .map(format_trigger_action)
+        .collect::<Vec<_>>();
+    BreakpointSummary {
+        trigger_id: trigger.trigger_id,
+        name: trigger.name.clone(),
+        predicate: format_trigger_predicate(&trigger.predicate),
+        actions,
+        state: if trigger.enabled {
+            BreakpointState::Enabled
+        } else {
+            BreakpointState::Disabled
+        },
+        lifetime: if trigger.fire_once {
+            BreakpointLifetime::Once
+        } else {
+            BreakpointLifetime::Persistent
+        },
+        disposition: breakpoint_disposition(&trigger.actions),
+        activity: if trigger.hit_count == 0 {
+            BreakpointActivity::NeverHit
+        } else {
+            BreakpointActivity::Hit
+        },
+        hit_count: trigger.hit_count,
+        last_hit_event_id: trigger.last_hit_event_id,
+        last_hit_sequence_no: trigger.last_hit_sequence_no,
+    }
+}
+
+fn breakpoint_disposition(actions: &[swat_control::TriggerAction]) -> BreakpointDisposition {
+    let mut saw_pause = false;
+    let mut saw_snapshot = false;
+    for action in actions {
+        match action {
+            swat_control::TriggerAction::PauseTarget => saw_pause = true,
+            swat_control::TriggerAction::CreateSnapshot { .. } => saw_snapshot = true,
+        }
+    }
+
+    match (saw_pause, saw_snapshot) {
+        (false, false) => BreakpointDisposition::Passive,
+        (true, false) => BreakpointDisposition::Pause,
+        (false, true) => BreakpointDisposition::Snapshot,
+        (true, true) => BreakpointDisposition::Mixed,
+    }
+}
+
+fn format_trigger_action(action: &swat_control::TriggerAction) -> String {
+    match action {
+        swat_control::TriggerAction::PauseTarget => "PauseTarget".to_string(),
+        swat_control::TriggerAction::CreateSnapshot { reason } => {
+            format!("CreateSnapshot({reason:?})")
+        }
+    }
+}
+
+fn format_trigger_predicate(predicate: &swat_control::TriggerPredicate) -> String {
+    match predicate {
+        swat_control::TriggerPredicate::Expr(expr) => format_expression(expr),
+        swat_control::TriggerPredicate::EventKindIs(kind) => {
+            format!("kind == {kind:?}")
+        }
+        swat_control::TriggerPredicate::SummaryContains(needle) => {
+            format!("summary contains {:?}", needle)
+        }
+        swat_control::TriggerPredicate::ArtifactUtf8Contains(needle) => {
+            format!("artifact.text contains {:?}", needle)
+        }
+        swat_control::TriggerPredicate::ArtifactJsonPathExists(path) => {
+            format!("artifact.json exists {path}")
+        }
+        swat_control::TriggerPredicate::ArtifactJsonPathEquals { path, expected } => {
+            format!("artifact.json {path} == {}", format_queried_value(expected))
+        }
+        swat_control::TriggerPredicate::ArtifactJsonFailsSchema(schema) => {
+            format!("artifact.json fails_schema {:?}", schema)
+        }
+        swat_control::TriggerPredicate::All(predicates) => predicates
+            .iter()
+            .map(format_trigger_predicate)
+            .collect::<Vec<_>>()
+            .join(" and "),
+        swat_control::TriggerPredicate::Any(predicates) => predicates
+            .iter()
+            .map(format_trigger_predicate)
+            .collect::<Vec<_>>()
+            .join(" or "),
+    }
+}
+
+fn format_queried_value(value: &QueriedValue) -> String {
+    match value {
+        QueriedValue::Null => "null".to_string(),
+        QueriedValue::Bool(value) => value.to_string(),
+        QueriedValue::Number(value) => value.clone(),
+        QueriedValue::String(value) | QueriedValue::Json(value) => format!("{value:?}"),
+    }
+}
+
+fn select_breakpoint_groups(
+    breakpoints: &[BreakpointSummary],
+    kind: BreakpointGroupKind,
+    selectors: &[(&str, fn(&BreakpointSummary) -> bool)],
+) -> Vec<BreakpointGroup> {
+    selectors
+        .iter()
+        .filter_map(|(label, predicate)| {
+            let grouped = breakpoints
+                .iter()
+                .filter(|breakpoint| predicate(breakpoint))
+                .cloned()
+                .collect::<Vec<_>>();
+            if grouped.is_empty() {
+                None
+            } else {
+                Some(BreakpointGroup {
+                    kind,
+                    label: (*label).to_string(),
+                    breakpoints: grouped,
+                })
+            }
+        })
+        .collect()
 }
 
 fn control_allowed(capabilities: swat_core::CapabilitySet, action: &ControlAction) -> bool {

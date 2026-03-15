@@ -183,8 +183,22 @@ const COMMANDS: &[CommandDescriptor] = &[
     CommandDescriptor {
         key: "breakpoint-list",
         synopsis: "breakpoint list",
-        summary: "list semantic breakpoints backed by the trigger engine",
-        aliases: &["breakpoint", "triggers"],
+        summary: "list semantic breakpoints in grouped debugger-oriented form",
+        aliases: &["breakpoint", "breakpoints"],
+        tui_supported: false,
+    },
+    CommandDescriptor {
+        key: "breakpoint-show",
+        synopsis: "breakpoint show <id>",
+        summary: "inspect one breakpoint's metadata, predicate, and last-hit event",
+        aliases: &[],
+        tui_supported: false,
+    },
+    CommandDescriptor {
+        key: "breakpoint-groups",
+        synopsis: "breakpoint groups",
+        summary: "summarize breakpoint groups by state, lifetime, disposition, and activity",
+        aliases: &[],
         tui_supported: false,
     },
     CommandDescriptor {
@@ -332,6 +346,8 @@ const FAMILIES: &[CommandFamily] = &[
         summary: "manage semantic breakpoints on top of the shared trigger engine",
         commands: &[
             "breakpoint-list",
+            "breakpoint-show",
+            "breakpoint-groups",
             "breakpoint-add",
             "breakpoint-once",
             "breakpoint-snapshot",
@@ -344,11 +360,13 @@ const FAMILIES: &[CommandFamily] = &[
         ],
         notes: &[
             "This first slice maps debugger breakpoint vocabulary onto the existing trigger engine instead of adding a parallel control model.",
-            "The legacy `trigger-*` commands remain available for compatibility while the higher-level breakpoint family becomes the main operator surface.",
+            "Use `breakpoint list`, `breakpoint show`, and `breakpoint groups` for debugger-oriented inspection; the raw `triggers` command remains for compatibility.",
         ],
         examples: &[
             r#"breakpoint add stop_search kind == ModelBoundary and artifact.json $.tool == "search""#,
             "breakpoint list",
+            "breakpoint show 7",
+            "breakpoint groups",
             "until kind == TriggerHit",
         ],
     },

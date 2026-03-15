@@ -115,6 +115,112 @@ pub fn evaluate_expression<S: SwatStore + ?Sized>(
     }
 }
 
+pub fn format_expression(expr: &QueryExpr) -> String {
+    format_expression_with_precedence(expr, 0)
+}
+
+fn format_expression_with_precedence(expr: &QueryExpr, parent_precedence: u8) -> String {
+    let (rendered, precedence) = match expr {
+        QueryExpr::FieldEquals { field, expected } => {
+            let expected = match expected {
+                QueryValue::Kind(kind) => format_event_kind(*kind).to_string(),
+                QueryValue::Value(value) => format_literal(value),
+            };
+            (format!("{} == {}", format_query_field(field), expected), 4)
+        }
+        QueryExpr::FieldContains { field, needle } => (
+            format!(
+                "{} contains {}",
+                format_query_field(field),
+                format_string_literal(needle)
+            ),
+            4,
+        ),
+        QueryExpr::FieldExists(field) => (format!("{} exists", format_query_field(field)), 4),
+        QueryExpr::ArtifactTextContains(needle) => (
+            format!("artifact.text contains {}", format_string_literal(needle)),
+            4,
+        ),
+        QueryExpr::ArtifactJsonPathExists(path) => (format!("artifact.json exists {path}"), 4),
+        QueryExpr::ArtifactJsonPathEquals { path, expected } => (
+            format!("artifact.json {path} == {}", format_literal(expected)),
+            4,
+        ),
+        QueryExpr::And(exprs) => (
+            exprs
+                .iter()
+                .map(|expr| format_expression_with_precedence(expr, 2))
+                .collect::<Vec<_>>()
+                .join(" and "),
+            2,
+        ),
+        QueryExpr::Or(exprs) => (
+            exprs
+                .iter()
+                .map(|expr| format_expression_with_precedence(expr, 1))
+                .collect::<Vec<_>>()
+                .join(" or "),
+            1,
+        ),
+        QueryExpr::Not(expr) => (
+            format!("not {}", format_expression_with_precedence(expr, 3)),
+            3,
+        ),
+    };
+
+    if precedence < parent_precedence {
+        format!("({rendered})")
+    } else {
+        rendered
+    }
+}
+
+fn format_query_field(field: &QueryField) -> &'static str {
+    match field {
+        QueryField::Kind => "kind",
+        QueryField::Summary => "summary",
+        QueryField::EventId => "event.id",
+        QueryField::SequenceNo => "sequence",
+        QueryField::CorrelationId => "correlation",
+        QueryField::BoundaryId => "boundary",
+        QueryField::SpanId => "span",
+        QueryField::ValueKey => "value.key",
+        QueryField::SourceFile => "source.file",
+        QueryField::SourceFunction => "source.function",
+    }
+}
+
+fn format_event_kind(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Lifecycle => "Lifecycle",
+        EventKind::Control => "Control",
+        EventKind::Execution => "Execution",
+        EventKind::StateMutation => "StateMutation",
+        EventKind::ValueObserved => "ValueObserved",
+        EventKind::TriggerHit => "TriggerHit",
+        EventKind::Snapshot => "Snapshot",
+        EventKind::Replay => "Replay",
+        EventKind::ModelBoundary => "ModelBoundary",
+        EventKind::ToolBoundary => "ToolBoundary",
+        EventKind::SourceResolution => "SourceResolution",
+        EventKind::SchemaResolution => "SchemaResolution",
+        EventKind::PolicyDecision => "PolicyDecision",
+    }
+}
+
+fn format_literal(value: &QueriedValue) -> String {
+    match value {
+        QueriedValue::Null => "null".to_string(),
+        QueriedValue::Bool(value) => value.to_string(),
+        QueriedValue::Number(value) => value.clone(),
+        QueriedValue::String(value) | QueriedValue::Json(value) => format_string_literal(value),
+    }
+}
+
+fn format_string_literal(value: &str) -> String {
+    format!(r#""{}""#, value.replace('"', "\\\""))
+}
+
 fn payload_summary(event: &EventEnvelope) -> Option<&str> {
     match &event.payload {
         EventPayload::Empty => None,

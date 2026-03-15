@@ -84,7 +84,11 @@ fn file_store_persists_events_and_artifacts_across_reopen() {
             .unwrap()
             .exists()
     );
-    assert!(reopened_events.iter().any(|event| event.kind == EventKind::Snapshot));
+    assert!(
+        reopened_events
+            .iter()
+            .any(|event| event.kind == EventKind::Snapshot)
+    );
 
     fs::remove_dir_all(&root).unwrap();
 }

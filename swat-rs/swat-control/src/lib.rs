@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use swat_core::{
-    AdapterEmission, ControlAction, ControlResponse, EventEnvelope, EventKind, EventPayload,
-    EventId, PendingEvent, SwatResult, TargetAdapter, TriggerId,
+    AdapterEmission, ControlAction, ControlResponse, EventEnvelope, EventId, EventKind,
+    EventPayload, PendingEvent, SwatResult, TargetAdapter, TriggerId,
 };
 use swat_expr::{QueryExpr, evaluate_expression};
 use swat_schema::{SchemaNode, validate_decoded_value};

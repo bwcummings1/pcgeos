@@ -1,4 +1,4 @@
-use swat_ui_tui::{run_headless, Mode, TuiConfig};
+use swat_ui_tui::{Mode, TuiConfig, run_headless};
 
 #[test]
 fn mock_headless_dashboard_renders_live_panes() {

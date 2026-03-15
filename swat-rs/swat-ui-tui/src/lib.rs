@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::buffer::Buffer;
@@ -20,7 +20,7 @@ use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
-use swat_command::{command_help, parse_command, Command, CommandSurface};
+use swat_command::{Command, CommandSurface, command_help, parse_command};
 use swat_control::TriggerEngine;
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
@@ -774,7 +774,9 @@ impl TuiApp {
 
     fn stack_lines(&self) -> SwatResult<Vec<String>> {
         let Some(session_id) = self.runtime.session_id() else {
-            return Ok(vec!["attach a target to inspect the stack view".to_string()]);
+            return Ok(vec![
+                "attach a target to inspect the stack view".to_string(),
+            ]);
         };
         let frames = self.runtime.inspector().stack_frames(session_id)?;
         let mut lines = vec![format!("stack frames={}", frames.len())];
@@ -1026,17 +1028,19 @@ mod tests {
         app.on_tick().unwrap();
 
         app.execute_command("help breakpoint").unwrap();
-        assert!(app
-            .messages
-            .iter()
-            .any(|line| line.contains("semantic breakpoints")));
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("semantic breakpoints"))
+        );
         assert!(app.messages.iter().any(|line| line.contains("[shell]")));
 
         app.execute_command("stack").unwrap();
-        assert!(app
-            .messages
-            .iter()
-            .any(|line| line.contains("stack frames=")));
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("stack frames="))
+        );
     }
 
     #[test]

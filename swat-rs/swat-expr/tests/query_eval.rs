@@ -2,7 +2,9 @@ use swat_core::{
     AdapterEmission, ArtifactAccess, ArtifactAlias, ArtifactBinding, ArtifactEncoding, BoundaryId,
     CausalityLink, EventKind, EventPayload, PendingArtifact, PendingEvent, SessionId, TargetId,
 };
-use swat_expr::{QueryExpr, QueryField, QueryValue, evaluate_expression, parse_expression};
+use swat_expr::{
+    QueryExpr, QueryField, QueryValue, evaluate_expression, format_expression, parse_expression,
+};
 use swat_store::InMemoryStore;
 use swat_value::QueriedValue;
 
@@ -152,4 +154,17 @@ fn preserves_existing_artifact_json_equality_behavior() {
 
     let negative = parse_expression(r#"artifact.json $.tool == "other""#).unwrap();
     assert!(!evaluate_expression(&store, &boundary_event, &negative));
+}
+
+#[test]
+fn formatter_round_trips_nested_boolean_queries() {
+    let expr = parse_expression(
+        r#"not (kind == ModelBoundary and artifact.json $.tool == "search") or source.file contains "demo.py""#,
+    )
+    .unwrap();
+
+    let rendered = format_expression(&expr);
+    let reparsed = parse_expression(&rendered).unwrap();
+
+    assert_eq!(reparsed, expr);
 }

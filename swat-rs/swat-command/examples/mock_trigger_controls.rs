@@ -30,9 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trigger_id = extract_trigger_id(&added);
 
     for command in [
+        "breakpoint list".to_string(),
+        format!("breakpoint show {trigger_id}"),
+        "breakpoint groups".to_string(),
         "triggers".to_string(),
         format!("trigger-disable {trigger_id}"),
-        "triggers".to_string(),
+        "breakpoint list".to_string(),
         format!("trigger-enable {trigger_id}"),
         format!("trigger-save {trigger_path}"),
         format!("trigger-load {trigger_path}"),

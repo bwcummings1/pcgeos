@@ -3,8 +3,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_mock::MockAdapter;
 use swat_adapter_python::{PythonAdapter, PythonAdapterSpec};
-use swat_core::ControlAction;
 use swat_control::TriggerEngine;
+use swat_core::ControlAction;
 use swat_script::{LiveScriptSession, ScriptHost};
 use swat_session::SessionManager;
 use swat_store::InMemoryStore;

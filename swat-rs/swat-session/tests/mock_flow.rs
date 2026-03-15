@@ -158,16 +158,26 @@ fn replay_plan_reuses_recorded_artifacts_without_duplication() {
 #[test]
 fn accepted_snapshot_controls_create_snapshot_inventory_and_events() {
     let mut store = InMemoryStore::new();
-    let (mut session_manager, session_id, _artifact_id, _artifact_ref) = run_initial_trace(&mut store);
+    let (mut session_manager, session_id, _artifact_id, _artifact_ref) =
+        run_initial_trace(&mut store);
     let mut adapter = MockAdapter::new("mock-snapshot-target");
 
     let reattach = session_manager.attach(&mut adapter, &mut store).unwrap();
     let live_session_id = reattach.session.session_id;
     session_manager
-        .control(live_session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .control(
+            live_session_id,
+            &mut adapter,
+            ControlAction::Resume,
+            &mut store,
+        )
         .unwrap();
-    session_manager.pump(live_session_id, &mut adapter, &mut store).unwrap();
-    session_manager.pump(live_session_id, &mut adapter, &mut store).unwrap();
+    session_manager
+        .pump(live_session_id, &mut adapter, &mut store)
+        .unwrap();
+    session_manager
+        .pump(live_session_id, &mut adapter, &mut store)
+        .unwrap();
 
     let snapshot = session_manager
         .control(
@@ -181,7 +191,12 @@ fn accepted_snapshot_controls_create_snapshot_inventory_and_events() {
         .unwrap();
     assert!(snapshot.response.accepted);
     assert!(snapshot.snapshot.is_some());
-    assert!(snapshot.stored_events.iter().any(|event| event.kind == EventKind::Snapshot));
+    assert!(
+        snapshot
+            .stored_events
+            .iter()
+            .any(|event| event.kind == EventKind::Snapshot)
+    );
 
     let snapshot_record = snapshot.snapshot.unwrap();
     assert_eq!(snapshot_record.reason, "checkpoint after search");

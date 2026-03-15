@@ -8,8 +8,10 @@ use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
-use swat_control::{pump_with_triggers, Trigger, TriggerAction, TriggerEngine, TriggerMatch};
+use swat_api::{
+    BreakpointGroupKind, BreakpointSummary, LiveSessionApi, StackFrame, TraceInspector,
+};
+use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerMatch, pump_with_triggers};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, EventPayload, SessionId,
     SnapshotId, SwatError, SwatResult, TargetAdapter, TriggerId,
@@ -19,7 +21,7 @@ use swat_script::ScriptHost;
 use swat_session::SessionManager;
 use swat_store::SwatStore;
 
-pub use registry::{command_help, CommandSurface};
+pub use registry::{CommandSurface, command_help};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -61,6 +63,11 @@ pub enum Command {
     Correlation {
         correlation_id: String,
     },
+    Breakpoints,
+    BreakpointShow {
+        trigger_id: TriggerId,
+    },
+    BreakpointGroups,
     Triggers,
     TriggerExpr {
         name: String,
@@ -183,6 +190,9 @@ impl CommandHost {
             Command::Query { expr } => self.query_events(&expr),
             Command::Entities { needle } => self.list_entities(&needle),
             Command::Correlation { correlation_id } => self.list_correlation(&correlation_id),
+            Command::Breakpoints => self.list_breakpoints(),
+            Command::BreakpointShow { trigger_id } => self.show_breakpoint(trigger_id),
+            Command::BreakpointGroups => self.list_breakpoint_groups(),
             Command::Triggers => Ok(self.list_triggers()),
             Command::TriggerExpr {
                 name,
@@ -628,6 +638,125 @@ impl CommandHost {
                 })
                 .collect(),
         )
+    }
+
+    fn list_breakpoints(&mut self) -> SwatResult<CommandOutput> {
+        let groups = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.breakpoint_groups()
+        };
+        let state_groups = groups
+            .into_iter()
+            .filter(|group| group.kind == BreakpointGroupKind::State)
+            .collect::<Vec<_>>();
+        let breakpoint_count = state_groups
+            .iter()
+            .map(|group| group.breakpoints.len())
+            .sum::<usize>();
+        let mut lines = Vec::new();
+        for group in state_groups {
+            lines.push(format!(
+                "group={} kind={} count={}",
+                group.label,
+                group.kind.label(),
+                group.breakpoints.len()
+            ));
+            lines.extend(group.breakpoints.iter().map(format_breakpoint_summary));
+        }
+        Ok(CommandOutput::new(
+            format!("{breakpoint_count} breakpoint(s)"),
+            lines,
+        ))
+    }
+
+    fn show_breakpoint(&mut self, trigger_id: TriggerId) -> SwatResult<CommandOutput> {
+        let detail = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.breakpoint_detail(trigger_id)
+        }
+        .ok_or_else(|| SwatError::new(format!("unknown breakpoint {}", trigger_id.raw())))?;
+
+        let breakpoint = detail.breakpoint;
+        let mut lines = vec![
+            format!(
+                "bp={} name={}",
+                breakpoint.trigger_id.raw(),
+                breakpoint.name
+            ),
+            format!(
+                "state={} lifetime={} disposition={} activity={}",
+                breakpoint.state.label(),
+                breakpoint.lifetime.label(),
+                breakpoint.disposition.label(),
+                breakpoint.activity.label()
+            ),
+            format!("actions={}", breakpoint.actions.join(",")),
+            format!("when={:?}", breakpoint.predicate),
+            format!("hits={}", breakpoint.hit_count),
+            format!(
+                "last_event={}",
+                breakpoint
+                    .last_hit_event_id
+                    .map(|event_id| event_id.raw().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            format!(
+                "last_seq={}",
+                breakpoint
+                    .last_hit_sequence_no
+                    .map(|sequence_no| sequence_no.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+        ];
+        if let Some(event) = detail.last_hit_event.as_ref() {
+            lines.push(format_event_line(event));
+        }
+        Ok(CommandOutput::new(
+            format!("breakpoint {}", trigger_id.raw()),
+            lines,
+        ))
+    }
+
+    fn list_breakpoint_groups(&mut self) -> SwatResult<CommandOutput> {
+        let groups = {
+            let api = LiveSessionApi::new(
+                &mut self.manager,
+                self.adapter.as_mut(),
+                self.store.as_mut(),
+                &mut self.trigger_engine,
+            );
+            api.breakpoint_groups()
+        };
+        let mut lines = Vec::new();
+        for group in &groups {
+            let ids = group
+                .breakpoints
+                .iter()
+                .map(|breakpoint| breakpoint.trigger_id.raw().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            lines.push(format!(
+                "kind={} group={} count={} ids={}",
+                group.kind.label(),
+                group.label,
+                group.breakpoints.len(),
+                ids
+            ));
+        }
+        Ok(CommandOutput::new(
+            format!("{} breakpoint group(s)", groups.len()),
+            lines,
+        ))
     }
 
     fn add_trigger(
@@ -1252,7 +1381,7 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         return parse_stack_command(rest);
     }
     if matches!(trimmed, "breakpoint" | "breakpoints" | "breakpoint list") {
-        return Ok(Command::Triggers);
+        return Ok(Command::Breakpoints);
     }
     if let Some(rest) = trimmed.strip_prefix("breakpoint ") {
         return parse_breakpoint_command(rest);
@@ -1440,7 +1569,15 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
 fn parse_breakpoint_command(rest: &str) -> SwatResult<Command> {
     let trimmed = rest.trim();
     if trimmed.is_empty() || trimmed == "list" {
-        return Ok(Command::Triggers);
+        return Ok(Command::Breakpoints);
+    }
+    if trimmed == "groups" {
+        return Ok(Command::BreakpointGroups);
+    }
+    if let Some(rest) = trimmed.strip_prefix("show ") {
+        return Ok(Command::BreakpointShow {
+            trigger_id: TriggerId::from_raw(parse_u64(rest.trim(), "breakpoint id")?),
+        });
     }
     if let Some(rest) = trimmed.strip_prefix("add ") {
         return parse_trigger_expr(rest, false);
@@ -1673,6 +1810,28 @@ fn format_controlled_pump_lines(report: &swat_control::ControlledPumpReport) -> 
         ));
     }
     lines
+}
+
+fn format_breakpoint_summary(breakpoint: &BreakpointSummary) -> String {
+    format!(
+        "bp={} state={} lifetime={} disposition={} hits={} last_event={} last_seq={} name={} actions={} when={:?}",
+        breakpoint.trigger_id.raw(),
+        breakpoint.state.label(),
+        breakpoint.lifetime.label(),
+        breakpoint.disposition.label(),
+        breakpoint.hit_count,
+        breakpoint
+            .last_hit_event_id
+            .map(|event_id| event_id.raw().to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        breakpoint
+            .last_hit_sequence_no
+            .map(|sequence_no| sequence_no.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        breakpoint.name,
+        breakpoint.actions.join(","),
+        breakpoint.predicate
+    )
 }
 
 fn format_replay_plan_lines(plan: &swat_replay::ReplayPlan) -> Vec<String> {

@@ -5,8 +5,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_api::{LiveSessionApi, TraceInspector};
-use swat_control::{Trigger, TriggerEngine, TriggerPredicate};
+use swat_api::{
+    BreakpointActivity, BreakpointDisposition, BreakpointGroupKind, BreakpointLifetime,
+    BreakpointState, LiveSessionApi, TraceInspector,
+};
+use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate, pump_with_triggers};
 use swat_core::{ControlAction, EventKind, EventPayload, PolicyVerdict, TriggerId};
 use swat_expr::parse_expression;
 use swat_session::SessionManager;
@@ -81,13 +84,17 @@ fn trace_inspector_can_find_boundary_events_and_artifact_text() {
     assert_eq!(inspection.snapshot.reason, "api snapshot");
     assert!(inspection.captured_event_count >= 5);
     assert_eq!(inspection.replay_directive_count, 1);
-    assert!(inspector
-        .replay_plan_for_snapshot(snapshot_id)
-        .unwrap()
-        .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID));
-    assert!(inspector
-        .replay_plan_for_boundary(session_id, swat_adapter_mock::MOCK_BOUNDARY_ID)
-        .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID));
+    assert!(
+        inspector
+            .replay_plan_for_snapshot(snapshot_id)
+            .unwrap()
+            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
+    );
+    assert!(
+        inspector
+            .replay_plan_for_boundary(session_id, swat_adapter_mock::MOCK_BOUNDARY_ID)
+            .has_boundary(swat_adapter_mock::MOCK_BOUNDARY_ID)
+    );
 }
 
 #[test]
@@ -257,10 +264,12 @@ fn trace_inspector_can_view_source_files_directly() {
     assert_eq!(snippet.focus_line, 4);
     assert_eq!(snippet.start_line, 3);
     assert_eq!(snippet.end_line, 5);
-    assert!(snippet
-        .lines
-        .iter()
-        .any(|line| line.text.contains("def beta")));
+    assert!(
+        snippet
+            .lines
+            .iter()
+            .any(|line| line.text.contains("def beta"))
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -323,6 +332,127 @@ fn live_session_api_audits_trigger_mutations() {
                 ..
             }
         )
+    }));
+}
+
+#[test]
+fn live_session_api_projects_debugger_oriented_breakpoint_views() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = MockAdapter::default();
+    let mut engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    manager
+        .control(session_id, &mut adapter, ControlAction::Resume, &mut store)
+        .unwrap();
+
+    let pause_breakpoint = Trigger::new(
+        "pause_search",
+        TriggerPredicate::Expr(
+            parse_expression(r#"kind == ModelBoundary and artifact.json $.tool == "search""#)
+                .unwrap(),
+        ),
+        vec![TriggerAction::PauseTarget],
+    )
+    .fire_once();
+    let pause_breakpoint_id = pause_breakpoint.trigger_id;
+
+    let snapshot_breakpoint = Trigger::new(
+        "capture_search",
+        TriggerPredicate::Expr(
+            parse_expression(r#"kind == ModelBoundary and artifact.json $.tool == "search""#)
+                .unwrap(),
+        ),
+        vec![TriggerAction::CreateSnapshot {
+            reason: "capture search boundary".to_string(),
+        }],
+    )
+    .disabled();
+
+    {
+        let mut api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+        api.add_trigger(session_id, pause_breakpoint).unwrap();
+        api.add_trigger(session_id, snapshot_breakpoint).unwrap();
+    }
+
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+    pump_with_triggers(
+        &mut manager,
+        session_id,
+        &mut adapter,
+        &mut store,
+        &mut engine,
+    )
+    .unwrap();
+
+    let api = LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut engine);
+    let breakpoints = api.breakpoint_summaries();
+    assert_eq!(breakpoints.len(), 2);
+
+    let pause = breakpoints
+        .iter()
+        .find(|breakpoint| breakpoint.name == "pause_search")
+        .unwrap();
+    assert_eq!(pause.trigger_id, pause_breakpoint_id);
+    assert_eq!(pause.state, BreakpointState::Enabled);
+    assert_eq!(pause.lifetime, BreakpointLifetime::Once);
+    assert_eq!(pause.disposition, BreakpointDisposition::Pause);
+    assert_eq!(pause.activity, BreakpointActivity::Hit);
+    assert_eq!(pause.hit_count, 1);
+    assert!(pause.predicate.contains("kind == ModelBoundary"));
+    assert_eq!(pause.actions, vec!["PauseTarget".to_string()]);
+
+    let snapshot = breakpoints
+        .iter()
+        .find(|breakpoint| breakpoint.name == "capture_search")
+        .unwrap();
+    assert_eq!(snapshot.state, BreakpointState::Disabled);
+    assert_eq!(snapshot.lifetime, BreakpointLifetime::Persistent);
+    assert_eq!(snapshot.disposition, BreakpointDisposition::Snapshot);
+    assert_eq!(snapshot.activity, BreakpointActivity::NeverHit);
+    assert!(
+        snapshot
+            .actions
+            .iter()
+            .any(|action| action.contains("CreateSnapshot"))
+    );
+
+    let detail = api.breakpoint_detail(pause_breakpoint_id).unwrap();
+    assert_eq!(detail.breakpoint.name, "pause_search");
+    assert!(matches!(
+        detail.last_hit_event.as_ref().map(|event| event.kind),
+        Some(EventKind::ModelBoundary)
+    ));
+
+    let groups = api.breakpoint_groups();
+    assert!(groups.iter().any(|group| {
+        group.kind == BreakpointGroupKind::State
+            && group.label == "enabled"
+            && group.breakpoints.len() == 1
+    }));
+    assert!(groups.iter().any(|group| {
+        group.kind == BreakpointGroupKind::State
+            && group.label == "disabled"
+            && group.breakpoints.len() == 1
+    }));
+    assert!(groups.iter().any(|group| {
+        group.kind == BreakpointGroupKind::Disposition
+            && group.label == "pause"
+            && group.breakpoints.len() == 1
+    }));
+    assert!(groups.iter().any(|group| {
+        group.kind == BreakpointGroupKind::Disposition
+            && group.label == "snapshot"
+            && group.breakpoints.len() == 1
     }));
 }
 

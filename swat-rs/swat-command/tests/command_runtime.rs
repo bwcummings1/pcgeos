@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_command::{command_help, parse_command, Command, CommandHost, CommandSurface};
+use swat_command::{Command, CommandHost, CommandSurface, command_help, parse_command};
 use swat_store::InMemoryStore;
 
 #[test]
@@ -19,20 +19,24 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 
     let session = host.execute("session").unwrap();
     assert!(session.summary.contains("session="));
-    assert!(session
-        .lines
-        .iter()
-        .any(|line| line.contains("counts events=1")));
+    assert!(
+        session
+            .lines
+            .iter()
+            .any(|line| line.contains("counts events=1"))
+    );
 
     let resume = host.execute("resume").unwrap();
     assert!(resume.summary.contains("resumed"));
 
     host.execute("pump").unwrap();
     let second = host.execute("pump").unwrap();
-    assert!(second
-        .lines
-        .iter()
-        .any(|line| line.contains("ModelBoundary")));
+    assert!(
+        second
+            .lines
+            .iter()
+            .any(|line| line.contains("ModelBoundary"))
+    );
 
     let queried = host
         .execute(r#"query kind == ModelBoundary and artifact.json $.tool == "search""#)
@@ -55,20 +59,24 @@ fn mock_command_host_can_attach_pump_query_and_script() {
 fn command_registry_exposes_family_help_and_alias_parsing() {
     let help = command_help(Some("breakpoint"), CommandSurface::Shell);
     assert!(help.summary.contains("help breakpoint"));
-    assert!(help
-        .lines
-        .iter()
-        .any(|line| line.contains("breakpoint add <name> <expr>")));
-    assert!(help
-        .lines
-        .iter()
-        .any(|line| line.contains("semantic breakpoints")));
+    assert!(
+        help.lines
+            .iter()
+            .any(|line| line.contains("breakpoint add <name> <expr>"))
+    );
+    assert!(
+        help.lines
+            .iter()
+            .any(|line| line.contains("semantic breakpoints"))
+    );
 
     let tui_help = command_help(Some("source"), CommandSurface::Tui);
-    assert!(tui_help
-        .lines
-        .iter()
-        .any(|line| line.contains("source file <path>")));
+    assert!(
+        tui_help
+            .lines
+            .iter()
+            .any(|line| line.contains("source file <path>"))
+    );
 
     assert_eq!(parse_command("stack").unwrap(), Command::Spans);
     assert_eq!(
@@ -105,7 +113,20 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             after: 2,
         }
     );
-    assert_eq!(parse_command("breakpoint list").unwrap(), Command::Triggers);
+    assert_eq!(
+        parse_command("breakpoint list").unwrap(),
+        Command::Breakpoints
+    );
+    assert_eq!(
+        parse_command("breakpoint show 9").unwrap(),
+        Command::BreakpointShow {
+            trigger_id: swat_core::TriggerId::from_raw(9),
+        }
+    );
+    assert_eq!(
+        parse_command("breakpoint groups").unwrap(),
+        Command::BreakpointGroups
+    );
     assert_eq!(
         parse_command("breakpoint disable 9").unwrap(),
         Command::TriggerDisable {
@@ -130,26 +151,74 @@ fn command_host_can_manage_and_fire_semantic_triggers() {
     assert!(added.summary.contains("added trigger"));
 
     let listed = host.execute("breakpoint list").unwrap();
-    assert_eq!(listed.lines.len(), 1);
-    let trigger_id = listed.lines[0]
+    assert!(
+        listed
+            .lines
+            .iter()
+            .any(|line| line == "group=enabled kind=state count=1")
+    );
+    let trigger_id = listed
+        .lines
+        .iter()
+        .find(|line| line.starts_with("bp="))
+        .unwrap()
         .split_whitespace()
-        .find_map(|part| part.strip_prefix("trigger="))
+        .find_map(|part| part.strip_prefix("bp="))
         .unwrap()
         .to_string();
-    assert!(listed.lines[0].contains("pause_search"));
-    assert!(listed.lines[0].contains("actions=PauseTarget"));
-    assert!(listed.lines[0].contains("hits=0"));
+    let breakpoint_line = listed
+        .lines
+        .iter()
+        .find(|line| line.starts_with("bp="))
+        .unwrap();
+    assert!(breakpoint_line.contains("pause_search"));
+    assert!(breakpoint_line.contains("actions=PauseTarget"));
+    assert!(breakpoint_line.contains("hits=0"));
+    assert!(breakpoint_line.contains("state=enabled"));
 
     host.execute("pump").unwrap();
     let triggered = host.execute("pump").unwrap();
     assert!(triggered.lines.iter().any(|line| line.contains("trigger=")));
-    assert!(triggered
+    assert!(
+        triggered
+            .lines
+            .iter()
+            .any(|line| line.contains("control accepted=true"))
+    );
+    let listed = host.execute("breakpoint list").unwrap();
+    let breakpoint_line = listed
         .lines
         .iter()
-        .any(|line| line.contains("control accepted=true")));
-    let listed = host.execute("breakpoint list").unwrap();
-    assert!(listed.lines[0].contains("hits=1"));
-    assert!(listed.lines[0].contains("last_event="));
+        .find(|line| line.starts_with("bp="))
+        .unwrap();
+    assert!(breakpoint_line.contains("hits=1"));
+    assert!(breakpoint_line.contains("last_event="));
+
+    let shown = host
+        .execute(&format!("breakpoint show {trigger_id}"))
+        .unwrap();
+    assert!(shown.summary.contains("breakpoint"));
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line.contains("state=enabled"))
+    );
+    assert!(shown.lines.iter().any(|line| line.contains("activity=hit")));
+
+    let grouped = host.execute("breakpoint groups").unwrap();
+    assert!(
+        grouped
+            .lines
+            .iter()
+            .any(|line| line.contains("kind=state group=enabled"))
+    );
+    assert!(
+        grouped
+            .lines
+            .iter()
+            .any(|line| line.contains("kind=activity group=hit"))
+    );
 
     let removed = host
         .execute(&format!("breakpoint remove {trigger_id}"))
@@ -197,6 +266,26 @@ fn command_host_can_toggle_trigger_enabled_state() {
 
     let listed = host.execute("triggers").unwrap();
     assert!(listed.lines[0].contains("enabled=true"));
+}
+
+#[test]
+fn raw_trigger_listing_remains_available_for_compatibility() {
+    let mut host = CommandHost::new(
+        Box::new(MockAdapter::default()),
+        Box::new(InMemoryStore::new()),
+    );
+
+    host.execute("attach").unwrap();
+    host.execute("resume").unwrap();
+    host.execute(
+        r#"trigger-expr pause_search kind == ModelBoundary and artifact.json $.tool == "search""#,
+    )
+    .unwrap();
+
+    let listed = host.execute("triggers").unwrap();
+    assert_eq!(listed.lines.len(), 1);
+    assert!(listed.lines[0].contains("trigger="));
+    assert!(listed.lines[0].contains("actions=PauseTarget"));
 }
 
 #[test]
@@ -267,10 +356,12 @@ fn command_host_can_save_and_restore_trigger_sets() {
     restored.execute("pump").unwrap();
     let triggered = restored.execute("pump").unwrap();
     assert!(triggered.lines.iter().any(|line| line.contains("trigger=")));
-    assert!(triggered
-        .lines
-        .iter()
-        .any(|line| line.contains("mock snapshot requested: capture search boundary")));
+    assert!(
+        triggered
+            .lines
+            .iter()
+            .any(|line| line.contains("mock snapshot requested: capture search boundary"))
+    );
     let listed = restored.execute("triggers").unwrap();
     assert!(listed.lines[0].contains("hits=1"));
 
@@ -290,15 +381,19 @@ fn command_host_can_run_until_expression() {
         .execute(r#"until kind == ModelBoundary and artifact.json $.tool == "search""#)
         .unwrap();
     assert!(until.summary.contains("until matched"));
-    assert!(until
-        .lines
-        .iter()
-        .any(|line| line.contains("mock target resumed")));
+    assert!(
+        until
+            .lines
+            .iter()
+            .any(|line| line.contains("mock target resumed"))
+    );
     assert!(until.lines.iter().any(|line| line.contains("TriggerHit")));
-    assert!(until
-        .lines
-        .iter()
-        .any(|line| line.contains("control accepted=true")));
+    assert!(
+        until
+            .lines
+            .iter()
+            .any(|line| line.contains("control accepted=true"))
+    );
 
     let listed = host.execute("triggers").unwrap();
     assert!(listed.lines.is_empty());
@@ -337,22 +432,28 @@ fn command_host_can_list_show_and_replay_snapshots() {
         .execute(&format!("snapshot-show {snapshot_id}"))
         .unwrap();
     assert!(shown.summary.contains("snapshot"));
-    assert!(shown
-        .lines
-        .iter()
-        .any(|line| line.contains("reason=\"shell checkpoint\"")));
-    assert!(shown
-        .lines
-        .iter()
-        .any(|line| line.contains("replay_directives=1")));
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line.contains("reason=\"shell checkpoint\""))
+    );
+    assert!(
+        shown
+            .lines
+            .iter()
+            .any(|line| line.contains("replay_directives=1"))
+    );
 
     let replay = host.execute(&format!("replay {snapshot_id}")).unwrap();
     assert!(replay.summary.contains("applied 1 replay directive"));
     assert!(replay.lines.iter().any(|line| line.contains("boundary=42")));
-    assert!(replay
-        .lines
-        .iter()
-        .any(|line| line.contains("prepared replay for boundary")));
+    assert!(
+        replay
+            .lines
+            .iter()
+            .any(|line| line.contains("prepared replay for boundary"))
+    );
 }
 
 #[test]
@@ -423,9 +524,11 @@ fn command_host_can_view_source_file_directly() {
     let viewed = host
         .execute(&format!("source view {} 4 1 1", path.display()))
         .unwrap();
-    assert!(viewed
-        .summary
-        .contains(&format!("source {}:4", path.display())));
+    assert!(
+        viewed
+            .summary
+            .contains(&format!("source {}:4", path.display()))
+    );
     assert!(viewed.lines.iter().any(|line| line.contains("def beta")));
 
     let _ = fs::remove_file(path);
@@ -476,14 +579,18 @@ time.sleep(0.1)
 
     let correlated = host.execute("correlation req-7").unwrap();
     assert_eq!(correlated.lines.len(), 7);
-    assert!(correlated
-        .lines
-        .iter()
-        .any(|line| line.contains("span_ids=model-1,tool-1")));
-    assert!(correlated
-        .lines
-        .iter()
-        .any(|line| line.contains("entity_count=")));
+    assert!(
+        correlated
+            .lines
+            .iter()
+            .any(|line| line.contains("span_ids=model-1,tool-1"))
+    );
+    assert!(
+        correlated
+            .lines
+            .iter()
+            .any(|line| line.contains("entity_count="))
+    );
 
     let spans = host.execute("stack").unwrap();
     assert_eq!(spans.lines.len(), 2);
@@ -495,10 +602,12 @@ time.sleep(0.1)
     let frame = host.execute("stack frame 0").unwrap();
     assert!(frame.summary.contains("stack frame 0"));
     assert!(frame.lines.iter().any(|line| line.contains("depth=1")));
-    assert!(frame
-        .lines
-        .iter()
-        .any(|line| line.contains("label=web_search")));
+    assert!(
+        frame
+            .lines
+            .iter()
+            .any(|line| line.contains("label=web_search"))
+    );
     assert!(frame.lines.iter().any(|line| line.contains("events:")));
 
     let model_boundary = spans
@@ -519,10 +628,11 @@ time.sleep(0.1)
         .execute(&format!("stack show {model_boundary}"))
         .unwrap();
     assert!(span.summary.contains("stack boundary"));
-    assert!(span
-        .lines
-        .iter()
-        .any(|line| line.contains("label=gpt-4.1-mini")));
+    assert!(
+        span.lines
+            .iter()
+            .any(|line| line.contains("label=gpt-4.1-mini"))
+    );
     assert!(span.lines.iter().any(|line| line.contains("events:")));
     assert!(span.lines.iter().any(|line| line.contains("event=")));
 
@@ -541,10 +651,12 @@ time.sleep(0.1)
 
     let artifact_detail = host.execute(&format!("artifact-show {event_id}")).unwrap();
     assert!(artifact_detail.summary.contains("artifact 0"));
-    assert!(artifact_detail
-        .lines
-        .iter()
-        .any(|line| line.contains("detail") && line.contains("gpt-4.1-mini")));
+    assert!(
+        artifact_detail
+            .lines
+            .iter()
+            .any(|line| line.contains("detail") && line.contains("gpt-4.1-mini"))
+    );
 
     let source_event_id = host
         .execute("events Execution")
@@ -562,17 +674,21 @@ time.sleep(0.1)
         .execute(&format!("source show {source_event_id}"))
         .unwrap();
     assert!(source.summary.contains("source unresolved"));
-    assert!(source
-        .lines
-        .iter()
-        .any(|line| line.contains("failure_kind=MissingFile")));
+    assert!(
+        source
+            .lines
+            .iter()
+            .any(|line| line.contains("failure_kind=MissingFile"))
+    );
 
     let source_file = host.execute("source file /tmp/agent.py").unwrap();
     assert!(source_file.summary.contains("/tmp/agent.py"));
-    assert!(source_file
-        .lines
-        .iter()
-        .any(|line| line.contains("planner started")));
+    assert!(
+        source_file
+            .lines
+            .iter()
+            .any(|line| line.contains("planner started"))
+    );
 
     let source_files = host.execute("source files").unwrap();
     assert_eq!(source_files.lines.len(), 1);

@@ -74,8 +74,14 @@ fn mock_boundary_artifact_can_trigger_pause() {
         .find(|event| event.event_id == second.trigger_matches[0].event_id)
         .unwrap();
     assert_eq!(trigger.hit_count, 1);
-    assert_eq!(trigger.last_hit_event_id, Some(second.trigger_matches[0].event_id));
-    assert_eq!(trigger.last_hit_sequence_no, Some(matched_event.sequence_no));
+    assert_eq!(
+        trigger.last_hit_event_id,
+        Some(second.trigger_matches[0].event_id)
+    );
+    assert_eq!(
+        trigger.last_hit_sequence_no,
+        Some(matched_event.sequence_no)
+    );
 }
 
 #[test]
@@ -173,13 +179,19 @@ fn mock_boundary_can_trigger_snapshot_creation() {
     assert!(response.summary.contains("capture-search-boundary"));
     let trigger = &engine.triggers()[0];
     assert_eq!(trigger.hit_count, 1);
-    assert_eq!(trigger.last_hit_event_id, Some(second.trigger_matches[0].event_id));
+    assert_eq!(
+        trigger.last_hit_event_id,
+        Some(second.trigger_matches[0].event_id)
+    );
     let matched_event = store
         .events_for_session(session_id)
         .into_iter()
         .find(|event| event.event_id == second.trigger_matches[0].event_id)
         .unwrap();
-    assert_eq!(trigger.last_hit_sequence_no, Some(matched_event.sequence_no));
+    assert_eq!(
+        trigger.last_hit_sequence_no,
+        Some(matched_event.sequence_no)
+    );
 }
 
 #[test]
@@ -237,7 +249,10 @@ fn disabled_trigger_can_be_reenabled_before_matching_again() {
     let trigger = &engine.triggers()[0];
     assert_eq!(trigger.hit_count, 1);
     assert_eq!(trigger.last_hit_event_id, Some(boundary_event.event_id));
-    assert_eq!(trigger.last_hit_sequence_no, Some(boundary_event.sequence_no));
+    assert_eq!(
+        trigger.last_hit_sequence_no,
+        Some(boundary_event.sequence_no)
+    );
 }
 
 #[test]
