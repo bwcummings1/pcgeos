@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `10/21 done`
-- Pending: `11`
+- Progress: `11/21 done`
+- Pending: `10`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -21,7 +21,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-008 | done | M2 | swat-rs-full-completion-plan | 81da5574 |
 | T-009 | done | M2 | swat-rs-full-completion-plan | 89d654ae |
 | T-010 | done | M2 | swat-rs-full-completion-plan | a89bb7fd |
-| T-011 | pending | M3 | - | - |
+| T-011 | done | M3 | swat-rs-full-completion-plan | 6a370bc4 |
 | T-012 | pending | M3 | - | - |
 | T-013 | pending | M3 | - | - |
 | T-014 | pending | M4 | - | - |
@@ -47,7 +47,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-008 | Add grouped breakpoint definitions, reusable predicates, and richer stop-reason modeling. | Named predicate libraries, user-defined breakpoint groups, and typed stop reasons now sit on the shared trigger substrate across `swat-control`, `swat-api`, and `swat-command`. |
 | T-009 | Add watchpoints for values, objects, resources, and lifecycle-aware load/time break conditions. | `swat-control` now supports value-change watchpoints plus elapsed-time and lifecycle-gated load predicates over shared value observations, with ADR 0029 documenting the stateful model. |
 | T-010 | Expose advanced breakpoint/watchpoint management across shell, TUI, script, and public API. | `swat-api` now projects typed watchpoint specs/details, shell and TUI share live breakpoint/watchpoint management, `swat-script` wraps the same mutation surface, and trigger persistence v4 preserves watchpoints. |
-| T-011 | Add typed frame/local/register inspection primitives for modern targets and shared APIs. | Start modern-target-first, then widen toward PC/GEOS-specific entities. |
+| T-011 | Add typed frame/local/register inspection primitives for modern targets and shared APIs. | `swat-api` now projects typed frame inspections with locals/registers from structured modern-target artifacts, shell and TUI expose `stack locals` / `stack registers`, and `swat-script` wraps the same frame-binding model. |
 | T-012 | Add typed patient/handle/resource/object inspection models and debugger-native presentations. | Keep `swat-core` target-neutral while enriching shared value/resolver layers. |
 | T-013 | Deepen expression/value/source/resolver traversals for debugger-native workflows rather than only event queries. | Preserve operator-friendly formatting across shell and TUI. |
 | T-014 | Add package-oriented script loading and shared command metadata integration. | Recover conceptual autoload parity without recreating Tcl chaos. |
