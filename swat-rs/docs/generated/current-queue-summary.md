@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `4/21 done`
-- Pending: `17`
+- Progress: `5/21 done`
+- Pending: `16`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -15,7 +15,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-002 | done | M1 | swat-rs-full-completion-plan | 3a188575 |
 | T-003 | done | M1 | swat-rs-full-completion-plan | 3834ac16 |
 | T-004 | done | M1 | swat-rs-full-completion-plan | 780f01cf |
-| T-005 | pending | M1 | - | - |
+| T-005 | done | M1 | swat-rs-full-completion-plan | 0fef11b3 |
 | T-006 | pending | M1 | - | - |
 | T-007 | pending | M1 | - | - |
 | T-008 | pending | M2 | - | - |
@@ -41,7 +41,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-002 | Add frame-oriented stack inspection APIs and shell/TUI workflows on top of the current boundary-span view. | `swat-api` now projects stack frames from boundary spans, and both shell and TUI use the shared frame model. |
 | T-003 | Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup. | `swat-api` now catalogs source files and direct file views, and both shell and TUI expose `source files` / `source view` workflows. |
 | T-004 | Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output. | `swat-api` now projects shared breakpoint summaries/details/groups; `breakpoint list/show/groups` use that model while raw `triggers` stays compatible. |
-| T-005 | Add shared help/completion/history/discovery metadata across shell and TUI. | The registry exists, but completion/history ergonomics are still shallow. |
+| T-005 | Add shared help/completion/history/discovery metadata across shell and TUI. | Shared registry search/completion now drives shell `rustyline` completion/history, TUI command-mode tab/history, and `help search <needle>` discovery. |
 | T-006 | Add script/runtime wrappers for the first debugger command families on top of `swat-api`. | Preserve the public-API boundary. |
 | T-007 | Reconcile Milestone 1 docs, demos, and validation evidence until the milestone exit criteria are materially satisfied. | Close M1 before moving to advanced breakpoint semantics. |
 | T-008 | Add grouped breakpoint definitions, reusable predicates, and richer stop-reason modeling. | Replace the current trigger-backed feel with a debugger-grade break model. |
