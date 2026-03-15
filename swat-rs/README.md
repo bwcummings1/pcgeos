@@ -32,6 +32,7 @@ The post-`v1` branch also now carries a continuous execution harness:
 - human-readable queue summary lives in `docs/generated/current-queue-summary.md`
 - status scripts live in `scripts/check-implementation-status.py` and
   `scripts/render-implementation-status.py`
+- unattended supervision lives in `scripts/run-continuous-agent.py`
 
 The workspace now spans the required end-to-end debugger surface for `v1`:
 
@@ -287,6 +288,10 @@ Validate and refresh the execution record with:
 `python3 scripts/check-implementation-status.py`
 
 `python3 scripts/render-implementation-status.py`
+
+Run unattended completion supervision with:
+
+`python3 scripts/run-continuous-agent.py`
 
 Verify the generated queue artifacts are current with:
 

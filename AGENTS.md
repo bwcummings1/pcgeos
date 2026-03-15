@@ -19,6 +19,10 @@ Read these first:
 4. `/home/ubuntu/pcgeos/swat-rs/PROJECT_COMPLETION_PLAN.md` when the goal is
    to complete the entire project rather than maintain `v1`
 
+For unattended full-project continuation, prefer:
+
+- `/home/ubuntu/pcgeos/swat-rs/scripts/run-continuous-agent.py`
+
 ## Legacy tree policy
 
 The historical debugger sources under `Tools/swat` are reference material unless

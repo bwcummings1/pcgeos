@@ -30,6 +30,11 @@ Then run the harness commands:
 - `python3 scripts/check-implementation-status.py`
 - `python3 scripts/render-implementation-status.py --check`
 
+If you are running unattended, prefer the supervisor instead of a one-shot
+prompt:
+
+- `python3 scripts/run-continuous-agent.py`
+
 Then inspect the main implementation seams:
 
 - `/home/ubuntu/pcgeos/swat-rs/swat-core/src/lib.rs`
@@ -96,14 +101,9 @@ Do not skip to later milestones before the earlier ones are materially closed.
 
 Immediate next task:
 
-Resume with `T-002` in the active queue and begin with the highest-value next
-slice:
-
-- add frame-oriented stack inspection APIs on top of the current boundary-span
-  view
-- expose those flows through the shared command registry, shell, and TUI
-- keep the implementation on top of shared APIs rather than shell-local or
-  TUI-local logic
+Resume with the first `pending` task in the active queue and start with the
+highest-value coherent slice under that task. Do not follow stale task numbers
+from old summaries; the queue in `PROJECT_COMPLETION_PLAN.md` is authoritative.
 
 Validation discipline for every slice:
 

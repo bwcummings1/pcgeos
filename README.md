@@ -20,6 +20,7 @@ Key entry points:
 - `swat-rs/CONTINUATION_PROMPT.md`
 - `swat-rs/PROJECT_COMPLETION_PLAN.md`
 - `swat-rs/PROJECT_CONTINUATION_PROMPT.md`
+- `swat-rs/scripts/run-continuous-agent.py`
 
 ![Screenshot showing a typical GEOS desktop](TechDocs/Markdown/Art/title-screenshot.png)
 

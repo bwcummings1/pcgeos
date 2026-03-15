@@ -45,6 +45,8 @@ Before substantial implementation, read in this order:
 - refresh queue artifacts with:
   - `python3 scripts/check-implementation-status.py`
   - `python3 scripts/render-implementation-status.py`
+- for unattended continuation, use:
+  - `python3 scripts/run-continuous-agent.py`
 - after each completed queue task: update the queue row, refresh artifacts,
   commit, push, and continue immediately to the next task
 - if blocked: mark the task `blocked` and record the exact blocker and next

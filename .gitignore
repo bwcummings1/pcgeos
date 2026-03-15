@@ -50,6 +50,7 @@ bin/swat
 # IDE stuff
 .vscode
 __pycache__/
+swat-rs/.runs/
 **/.symdir.1
 **/.symdir.2
 **/.symdir.3

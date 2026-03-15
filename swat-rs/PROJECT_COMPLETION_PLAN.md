@@ -54,6 +54,7 @@ python3 scripts/check-implementation-status.py
 python3 scripts/check-implementation-status.py --write-artifact
 python3 scripts/render-implementation-status.py
 python3 scripts/render-implementation-status.py --check
+python3 scripts/run-continuous-agent.py
 ```
 
 Execution rules:
@@ -72,6 +73,9 @@ Execution rules:
 4. Do not treat a task summary or milestone summary as a stopping point.
 5. The generated artifacts under `docs/generated/` must stay aligned with the
    current queue section.
+6. For unattended execution, use `scripts/run-continuous-agent.py` instead of
+   launching a one-shot agent manually. The supervisor is responsible for
+   relaunching the agent until the queue is complete or a blocker is recorded.
 
 ## Current Cycle Queue (T-001..T-021)
 
@@ -643,14 +647,9 @@ Repeat this loop until the `Definition of Done` above is satisfied:
 
 ## Immediate next task
 
-Resume with `T-002`.
+Resume with the first `pending` task in the active queue and begin with the
+highest-value coherent slice under that task.
 
-The highest-value next slice is:
+For unattended runs, use:
 
-- add frame-oriented stack inspection APIs on top of the current boundary-span
-  view
-- expose those flows through the shared command registry, shell, and TUI
-- keep the implementation on top of shared APIs rather than shell-local or
-  TUI-local logic
-
-That is the cleanest continuation of Milestone 1 now that `T-001` is complete.
+`python3 scripts/run-continuous-agent.py`
