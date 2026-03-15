@@ -106,6 +106,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0031-typed-frame-locals-and-registers.md`
 - `docs/adrs/0032-typed-target-entity-inspection.md`
 - `docs/adrs/0033-debugger-native-query-value-and-source-traversals.md`
+- `docs/adrs/0034-package-oriented-script-libraries.md`
 
 ## Phase 1 status
 
@@ -216,7 +217,10 @@ queries, stack/source inspection, and file-oriented source lookup. Its live
 session wrappers now expose grouped breakpoint predicates, breakpoint-group
 policies, value-change watchpoints, typed frame locals/registers, typed
 patient/handle/resource/object inspection, and stack/source workflows through
-the same shared `swat-api` surface used by the shell and TUI.
+the same shared `swat-api` surface used by the shell and TUI. It now also
+ships built-in package-oriented Rhai libraries for `process`, `stack`,
+`patient`, `object`, and `source`, with autoloadable exports derived from the
+legacy Tcl family layout while still routing entirely through the public API.
 
 The first API crate is also now in the workspace:
 
@@ -279,7 +283,9 @@ source-file discovery plus direct file viewing on the shared source layer,
 typed `stack locals` / `stack registers` inspection, typed
 `patient`/`handle`/`resource`/`object` inspection, status/session
 introspection, richer artifact rendering, observed `value` history traversal,
-function-oriented source traversal, source failure reporting, and a runnable
+function-oriented source traversal, source failure reporting, package-aware
+`script packages` / `script package show` / `script package load` workflows
+backed by shared `swat-script` metadata, and a runnable
 CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,

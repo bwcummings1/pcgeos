@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rhai::{Dynamic, Engine, EvalAltResult, Scope};
 use swat_api::{
@@ -467,9 +467,308 @@ impl ScriptContext {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptPackageExportMetadata {
+    pub name: &'static str,
+    pub summary: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptPackageMetadata {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub summary: &'static str,
+    pub notes: &'static [&'static str],
+    pub legacy_references: &'static [&'static str],
+    pub exports: &'static [ScriptPackageExportMetadata],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScriptPackageSpec {
+    metadata: ScriptPackageMetadata,
+    source: &'static str,
+}
+
+const PROCESS_EXPORTS: &[ScriptPackageExportMetadata] = &[
+    ScriptPackageExportMetadata {
+        name: "process_event_total",
+        summary: "return the current session event count",
+    },
+    ScriptPackageExportMetadata {
+        name: "process_has_summary",
+        summary: "check whether any event summary contains a substring",
+    },
+    ScriptPackageExportMetadata {
+        name: "process_query_total",
+        summary: "run a shared query expression and return its match count",
+    },
+];
+
+const STACK_EXPORTS: &[ScriptPackageExportMetadata] = &[
+    ScriptPackageExportMetadata {
+        name: "stack_frame_total",
+        summary: "return the number of projected stack frames",
+    },
+    ScriptPackageExportMetadata {
+        name: "stack_top_label",
+        summary: "return the label for frame 0",
+    },
+    ScriptPackageExportMetadata {
+        name: "stack_has_local",
+        summary: "check whether one frame exposes a typed local binding",
+    },
+    ScriptPackageExportMetadata {
+        name: "stack_has_register",
+        summary: "check whether one frame exposes a typed register binding",
+    },
+];
+
+const PATIENT_EXPORTS: &[ScriptPackageExportMetadata] = &[
+    ScriptPackageExportMetadata {
+        name: "patient_total",
+        summary: "return the typed patient count",
+    },
+    ScriptPackageExportMetadata {
+        name: "patient_has",
+        summary: "check whether a typed patient exists by name",
+    },
+    ScriptPackageExportMetadata {
+        name: "patient_handle_total",
+        summary: "return the number of handles related to one patient",
+    },
+];
+
+const OBJECT_EXPORTS: &[ScriptPackageExportMetadata] = &[
+    ScriptPackageExportMetadata {
+        name: "handle_total",
+        summary: "return the typed handle count",
+    },
+    ScriptPackageExportMetadata {
+        name: "handle_has",
+        summary: "check whether a typed handle exists by id",
+    },
+    ScriptPackageExportMetadata {
+        name: "handle_object_total",
+        summary: "return the number of objects related to one handle",
+    },
+    ScriptPackageExportMetadata {
+        name: "resource_total",
+        summary: "return the typed resource count",
+    },
+    ScriptPackageExportMetadata {
+        name: "resource_has",
+        summary: "check whether a typed resource exists by name",
+    },
+    ScriptPackageExportMetadata {
+        name: "resource_object_total",
+        summary: "return the number of objects related to one resource",
+    },
+    ScriptPackageExportMetadata {
+        name: "object_total",
+        summary: "return the typed object count",
+    },
+    ScriptPackageExportMetadata {
+        name: "object_has",
+        summary: "check whether a typed object identity exists",
+    },
+    ScriptPackageExportMetadata {
+        name: "object_class_is",
+        summary: "compare an object's projected class name",
+    },
+];
+
+const SOURCE_EXPORTS: &[ScriptPackageExportMetadata] = &[
+    ScriptPackageExportMetadata {
+        name: "source_function_total",
+        summary: "return the discovered source-function count",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_has_function",
+        summary: "check whether a discovered source function exists",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_function_event_total",
+        summary: "return the number of events for one source function",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_file_total",
+        summary: "return the discovered source-file count",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_has_file",
+        summary: "check whether a discovered source file exists",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_file_event_total",
+        summary: "return the number of events for one source file",
+    },
+    ScriptPackageExportMetadata {
+        name: "source_view_has",
+        summary: "check whether a source snippet contains a substring",
+    },
+];
+
+const SCRIPT_PACKAGES: &[ScriptPackageSpec] = &[
+    ScriptPackageSpec {
+        metadata: ScriptPackageMetadata {
+            name: "process",
+            aliases: &[],
+            summary: "session and query helpers derived from legacy process/toplevel workflows",
+            notes: &[
+                "The process package stays read-only in the frozen script host and routes through the shared query and summary APIs.",
+            ],
+            legacy_references: &[
+                "/home/ubuntu/pcgeos/Tools/swat/lib.new/process.tcl",
+                "/home/ubuntu/pcgeos/Tools/swat/lib.new/toplevel.tcl",
+            ],
+            exports: PROCESS_EXPORTS,
+        },
+        source: include_str!("packages/process.rhai"),
+    },
+    ScriptPackageSpec {
+        metadata: ScriptPackageMetadata {
+            name: "stack",
+            aliases: &[],
+            summary: "frame-oriented helpers derived from the legacy stack Tcl family",
+            notes: &[
+                "Stack helpers sit on top of shared frame/local/register inspection instead of reconstructing stack state in script-space.",
+            ],
+            legacy_references: &["/home/ubuntu/pcgeos/Tools/swat/lib.new/stack.tcl"],
+            exports: STACK_EXPORTS,
+        },
+        source: include_str!("packages/stack.rhai"),
+    },
+    ScriptPackageSpec {
+        metadata: ScriptPackageMetadata {
+            name: "patient",
+            aliases: &[],
+            summary: "typed patient helpers derived from the legacy patient Tcl family",
+            notes: &[
+                "Patient helpers use the typed patient/handle/resource/object projections added to the shared inspection API.",
+            ],
+            legacy_references: &["/home/ubuntu/pcgeos/Tools/swat/lib.new/patient.tcl"],
+            exports: PATIENT_EXPORTS,
+        },
+        source: include_str!("packages/patient.rhai"),
+    },
+    ScriptPackageSpec {
+        metadata: ScriptPackageMetadata {
+            name: "object",
+            aliases: &["objwatch"],
+            summary: "typed handle/resource/object helpers derived from the legacy object Tcl families",
+            notes: &[
+                "The object package preserves debugger-native object graph workflows without leaking adapter-specific storage rules into `swat-core`.",
+            ],
+            legacy_references: &[
+                "/home/ubuntu/pcgeos/Tools/swat/lib.new/object.tcl",
+                "/home/ubuntu/pcgeos/Tools/swat/lib.new/objwatch.tcl",
+            ],
+            exports: OBJECT_EXPORTS,
+        },
+        source: include_str!("packages/object.rhai"),
+    },
+    ScriptPackageSpec {
+        metadata: ScriptPackageMetadata {
+            name: "source",
+            aliases: &["srclist", "slist"],
+            summary: "source navigation helpers derived from the legacy srclist Tcl family",
+            notes: &[
+                "Source helpers stay on the shared source and resolver layers, so shell, TUI, and scripts see the same file and function projections.",
+            ],
+            legacy_references: &["/home/ubuntu/pcgeos/Tools/swat/lib.new/srclist.tcl"],
+            exports: SOURCE_EXPORTS,
+        },
+        source: include_str!("packages/source.rhai"),
+    },
+];
+
+pub fn builtin_script_packages() -> Vec<ScriptPackageMetadata> {
+    SCRIPT_PACKAGES
+        .iter()
+        .map(|package| package.metadata)
+        .collect()
+}
+
+pub fn builtin_script_package(name: &str) -> Option<ScriptPackageMetadata> {
+    find_script_package(name).map(|package| package.metadata)
+}
+
+fn find_script_package(name: &str) -> Option<&'static ScriptPackageSpec> {
+    SCRIPT_PACKAGES.iter().find(|package| {
+        package.metadata.name.eq_ignore_ascii_case(name)
+            || package
+                .metadata
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(name))
+    })
+}
+
+fn script_requires_export(script: &str, export: &str) -> bool {
+    script.match_indices(export).any(|(index, _)| {
+        let prefix_ok = script[..index]
+            .chars()
+            .next_back()
+            .map(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .unwrap_or(true);
+        if !prefix_ok {
+            return false;
+        }
+        let suffix = &script[index + export.len()..];
+        let suffix = suffix.trim_start();
+        suffix.starts_with('(')
+    })
+}
+
+fn rewrite_export_calls(script: &str, export: &str) -> String {
+    let mut rewritten = String::with_capacity(script.len() + 32);
+    let mut cursor = 0;
+
+    while let Some(relative_index) = script[cursor..].find(export) {
+        let index = cursor + relative_index;
+        let prefix = &script[..index];
+        let prefix_ok = prefix
+            .chars()
+            .next_back()
+            .map(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .unwrap_or(true);
+        let previous_token = prefix
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .next_back()
+            .unwrap_or("");
+        let mut open_paren = index + export.len();
+        while let Some(ch) = script[open_paren..].chars().next() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            open_paren += ch.len_utf8();
+        }
+        let call_ok = script[open_paren..].starts_with('(');
+
+        if !prefix_ok || previous_token == "fn" || !call_ok {
+            rewritten.push_str(&script[cursor..index + export.len()]);
+            cursor = index + export.len();
+            continue;
+        }
+
+        rewritten.push_str(&script[cursor..open_paren + 1]);
+        let has_args = !script[open_paren + 1..].trim_start().starts_with(')');
+        if has_args {
+            rewritten.push_str("ctx, ");
+        } else {
+            rewritten.push_str("ctx");
+        }
+        cursor = open_paren + 1;
+    }
+
+    rewritten.push_str(&script[cursor..]);
+    rewritten
+}
+
 pub struct ScriptHost {
     engine: Engine,
     scope: Scope<'static>,
+    loaded_packages: BTreeSet<&'static str>,
 }
 
 impl ScriptHost {
@@ -521,7 +820,10 @@ impl ScriptHost {
         engine.register_fn("value_count", ScriptContext::value_count);
         engine.register_fn("value_key", ScriptContext::value_key);
         engine.register_fn("value_event_count", ScriptContext::value_event_count);
-        engine.register_fn("source_function_count", ScriptContext::source_function_count);
+        engine.register_fn(
+            "source_function_count",
+            ScriptContext::source_function_count,
+        );
         engine.register_fn("source_function_name", ScriptContext::source_function_name);
         engine.register_fn(
             "source_function_event_count",
@@ -537,30 +839,97 @@ impl ScriptHost {
         let mut scope = Scope::new();
         scope.push("ctx", ScriptContext::from_store(store, session_id));
 
-        Self { engine, scope }
+        Self {
+            engine,
+            scope,
+            loaded_packages: BTreeSet::new(),
+        }
+    }
+
+    pub fn available_packages(&self) -> Vec<ScriptPackageMetadata> {
+        builtin_script_packages()
+    }
+
+    pub fn loaded_packages(&self) -> Vec<ScriptPackageMetadata> {
+        self.loaded_packages
+            .iter()
+            .filter_map(|name| builtin_script_package(name))
+            .collect()
+    }
+
+    pub fn load_package(&mut self, name: &str) -> SwatResult<()> {
+        let package = find_script_package(name).ok_or_else(|| {
+            let available = builtin_script_packages()
+                .into_iter()
+                .map(|package| package.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            SwatError::new(format!(
+                "unknown script package {name}; available: {available}"
+            ))
+        })?;
+        self.loaded_packages.insert(package.metadata.name);
+        Ok(())
+    }
+
+    fn prepare_script(&mut self, script: &str) -> String {
+        for package in SCRIPT_PACKAGES {
+            if package
+                .metadata
+                .exports
+                .iter()
+                .any(|export| script_requires_export(script, export.name))
+            {
+                self.loaded_packages.insert(package.metadata.name);
+            }
+        }
+
+        let mut script = script.to_string();
+        for package in SCRIPT_PACKAGES {
+            if !self.loaded_packages.contains(package.metadata.name) {
+                continue;
+            }
+            for export in package.metadata.exports {
+                script = rewrite_export_calls(&script, export.name);
+            }
+        }
+
+        let mut assembled = String::new();
+        for package in SCRIPT_PACKAGES {
+            if self.loaded_packages.contains(package.metadata.name) {
+                assembled.push_str(package.source);
+                assembled.push_str("\n\n");
+            }
+        }
+        assembled.push_str(&script);
+        assembled
     }
 
     pub fn eval_dynamic(&mut self, script: &str) -> SwatResult<Dynamic> {
+        let script = self.prepare_script(script);
         self.engine
-            .eval_with_scope::<Dynamic>(&mut self.scope, script)
+            .eval_with_scope::<Dynamic>(&mut self.scope, &script)
             .map_err(script_error)
     }
 
     pub fn eval_i64(&mut self, script: &str) -> SwatResult<i64> {
+        let script = self.prepare_script(script);
         self.engine
-            .eval_with_scope::<i64>(&mut self.scope, script)
+            .eval_with_scope::<i64>(&mut self.scope, &script)
             .map_err(script_error)
     }
 
     pub fn eval_bool(&mut self, script: &str) -> SwatResult<bool> {
+        let script = self.prepare_script(script);
         self.engine
-            .eval_with_scope::<bool>(&mut self.scope, script)
+            .eval_with_scope::<bool>(&mut self.scope, &script)
             .map_err(script_error)
     }
 
     pub fn eval_string(&mut self, script: &str) -> SwatResult<String> {
+        let script = self.prepare_script(script);
         self.engine
-            .eval_with_scope::<String>(&mut self.scope, script)
+            .eval_with_scope::<String>(&mut self.scope, &script)
             .map_err(script_error)
     }
 }

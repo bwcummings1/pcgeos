@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::CommandOutput;
+use swat_script::{ScriptPackageMetadata, builtin_script_package, builtin_script_packages};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandSurface {
@@ -420,6 +421,27 @@ const COMMANDS: &[CommandDescriptor] = &[
         aliases: &[],
         tui_supported: false,
     },
+    CommandDescriptor {
+        key: "script-packages",
+        synopsis: "script packages",
+        summary: "list built-in script packages and their exported helpers",
+        aliases: &[],
+        tui_supported: false,
+    },
+    CommandDescriptor {
+        key: "script-package-load",
+        synopsis: "script package load <name>",
+        summary: "pin one built-in script package for subsequent shell evaluations",
+        aliases: &[],
+        tui_supported: false,
+    },
+    CommandDescriptor {
+        key: "script-package-show",
+        synopsis: "script package show <name>",
+        summary: "inspect one built-in script package, its exports, and legacy references",
+        aliases: &[],
+        tui_supported: false,
+    },
 ];
 
 const FAMILIES: &[CommandFamily] = &[
@@ -623,9 +645,22 @@ const FAMILIES: &[CommandFamily] = &[
         topic: "automation",
         aliases: &["script"],
         summary: "run script-backed inspection workflows on the public API",
-        commands: &["script"],
-        notes: &[],
-        examples: &["script ctx.event_count()"],
+        commands: &[
+            "script",
+            "script-packages",
+            "script-package-load",
+            "script-package-show",
+        ],
+        notes: &[
+            "Built-in script packages are explicit/autoloadable Rhai libraries layered over the public `ctx` inspection surface rather than shell-local shortcuts.",
+            "Package metadata comes from `swat-script` and is reused here for help, search, and completion so the shell and future clients describe the same library surface.",
+        ],
+        examples: &[
+            "script packages",
+            "script package show stack",
+            "script package load patient",
+            "script process_event_total()",
+        ],
     },
 ];
 
@@ -636,6 +671,9 @@ pub fn command_help(topic: Option<&str>, surface: CommandSurface) -> CommandOutp
     }
 
     let Some(family) = find_family(normalized) else {
+        if let Some(package) = builtin_script_package(normalized) {
+            return script_package_help(package);
+        }
         let topics = FAMILIES
             .iter()
             .map(|family| family.topic)
@@ -657,6 +695,9 @@ pub fn command_help(topic: Option<&str>, surface: CommandSurface) -> CommandOutp
     );
     if !family.notes.is_empty() {
         lines.extend(family.notes.iter().map(|note| note.to_string()));
+    }
+    if family.topic == "automation" {
+        lines.extend(script_package_overview_lines());
     }
     if !family.examples.is_empty() {
         lines.push(format!("examples: {}", family.examples.join(" | ")));
@@ -714,6 +755,37 @@ pub fn command_search(needle: &str, surface: CommandSurface) -> CommandOutput {
         }
     }
 
+    for package in builtin_script_packages() {
+        let exports = package
+            .exports
+            .iter()
+            .map(|export| export.name)
+            .collect::<Vec<_>>()
+            .join(",");
+        let aliases = package.aliases.join(",");
+        let legacy = package.legacy_references.join(",");
+        if package.name.to_ascii_lowercase().contains(&needle)
+            || package.summary.to_ascii_lowercase().contains(&needle)
+            || package
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase().contains(&needle))
+            || package
+                .exports
+                .iter()
+                .any(|export| export.name.to_ascii_lowercase().contains(&needle))
+            || package
+                .legacy_references
+                .iter()
+                .any(|reference| reference.to_ascii_lowercase().contains(&needle))
+        {
+            lines.push(format!(
+                "script-package={} aliases={} exports={} legacy={} summary={}",
+                package.name, aliases, exports, legacy, package.summary
+            ));
+        }
+    }
+
     if lines.is_empty() {
         lines.push("no command topics matched".to_string());
     }
@@ -767,6 +839,24 @@ pub fn command_completions(prefix: &str, surface: CommandSurface) -> Vec<String>
         for alias in command.aliases {
             if normalized.is_empty() || alias.to_ascii_lowercase().starts_with(&normalized_lower) {
                 completions.insert((*alias).to_string());
+            }
+        }
+    }
+
+    if matches!(surface, CommandSurface::Shell) {
+        for package in builtin_script_packages() {
+            for candidate in [
+                format!("script package load {}", package.name),
+                format!("script package show {}", package.name),
+                format!("help {}", package.name),
+            ] {
+                if normalized.is_empty()
+                    || candidate
+                        .to_ascii_lowercase()
+                        .starts_with(&normalized_lower)
+                {
+                    completions.insert(candidate);
+                }
             }
         }
     }
@@ -830,4 +920,42 @@ fn format_synopsis(command: &CommandDescriptor, surface: CommandSurface) -> Stri
 
 fn command_available_for_completion(command: &CommandDescriptor, surface: CommandSurface) -> bool {
     matches!(surface, CommandSurface::Shell) || command.tui_supported
+}
+
+fn script_package_overview_lines() -> Vec<String> {
+    builtin_script_packages()
+        .into_iter()
+        .map(|package| {
+            let exports = package
+                .exports
+                .iter()
+                .map(|export| export.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "package={} exports={} summary={}",
+                package.name, exports, package.summary
+            )
+        })
+        .collect()
+}
+
+fn script_package_help(package: ScriptPackageMetadata) -> CommandOutput {
+    let mut lines = vec![package.summary.to_string()];
+    if !package.notes.is_empty() {
+        lines.extend(package.notes.iter().map(|note| note.to_string()));
+    }
+    if !package.exports.is_empty() {
+        lines.push("exports:".to_string());
+        lines.extend(
+            package
+                .exports
+                .iter()
+                .map(|export| format!("{}  {}", export.name, export.summary)),
+        );
+    }
+    if !package.legacy_references.is_empty() {
+        lines.push(format!("legacy: {}", package.legacy_references.join(" | ")));
+    }
+    CommandOutput::new(format!("help {}", package.name), lines)
 }

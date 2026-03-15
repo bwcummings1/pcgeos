@@ -219,14 +219,25 @@ time.sleep(0.1)
         .unwrap()
         .unwrap();
     assert_eq!(value_detail.history.len(), 1);
-    assert!(value_detail.history[0]
-        .preview
-        .as_deref()
-        .unwrap_or_default()
-        .contains("memory.turn"));
-    assert_eq!(inspector.events_for_patient(session_id, "ui").unwrap().len(), 2);
+    assert!(
+        value_detail.history[0]
+            .preview
+            .as_deref()
+            .unwrap_or_default()
+            .contains("memory.turn")
+    );
     assert_eq!(
-        inspector.events_for_handle(session_id, "h:1001").unwrap().len(),
+        inspector
+            .events_for_patient(session_id, "ui")
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        inspector
+            .events_for_handle(session_id, "h:1001")
+            .unwrap()
+            .len(),
         2
     );
     assert_eq!(
@@ -341,7 +352,10 @@ time.sleep(0.1)
     assert_eq!(patient_detail.handles, vec!["h:1001".to_string()]);
     assert_eq!(patient_detail.resources, vec!["AppResource".to_string()]);
     assert_eq!(patient_detail.objects, vec!["^lui:0002".to_string()]);
-    assert_eq!(patient_detail.source_files, vec!["/tmp/agent.py".to_string()]);
+    assert_eq!(
+        patient_detail.source_files,
+        vec!["/tmp/agent.py".to_string()]
+    );
 
     let handles = inspector.handles(session_id).unwrap();
     assert_eq!(handles.len(), 1);
@@ -352,9 +366,15 @@ time.sleep(0.1)
     assert_eq!(handles[0].attached, Some(true));
     assert_eq!(handles[0].object_count, 1);
 
-    let handle_detail = inspector.handle_detail(session_id, "h:1001").unwrap().unwrap();
+    let handle_detail = inspector
+        .handle_detail(session_id, "h:1001")
+        .unwrap()
+        .unwrap();
     assert_eq!(handle_detail.objects, vec!["^lui:0002".to_string()]);
-    assert_eq!(handle_detail.source_files, vec!["/tmp/agent.py".to_string()]);
+    assert_eq!(
+        handle_detail.source_files,
+        vec!["/tmp/agent.py".to_string()]
+    );
 
     let resources = inspector.resources(session_id).unwrap();
     assert_eq!(resources.len(), 1);
@@ -377,9 +397,15 @@ time.sleep(0.1)
     assert_eq!(objects[0].handle.as_deref(), Some("h:1001"));
     assert_eq!(objects[0].resource.as_deref(), Some("AppResource"));
 
-    let object_detail = inspector.object_detail(session_id, "^lui:0002").unwrap().unwrap();
+    let object_detail = inspector
+        .object_detail(session_id, "^lui:0002")
+        .unwrap()
+        .unwrap();
     assert_eq!(object_detail.object.address.as_deref(), Some("^lui:0002"));
-    assert_eq!(object_detail.source_files, vec!["/tmp/agent.py".to_string()]);
+    assert_eq!(
+        object_detail.source_files,
+        vec!["/tmp/agent.py".to_string()]
+    );
 }
 
 #[test]

@@ -265,10 +265,15 @@ impl<'a, S: SwatStore + ?Sized> TraceResolver<'a, S> {
                     kind: ResolvedEntityKind::Handle,
                     name: handle,
                 }));
-                entities.extend(patient.resource_names.into_iter().map(|resource| EntityRef {
-                    kind: ResolvedEntityKind::Resource,
-                    name: resource,
-                }));
+                entities.extend(
+                    patient
+                        .resource_names
+                        .into_iter()
+                        .map(|resource| EntityRef {
+                            kind: ResolvedEntityKind::Resource,
+                            name: resource,
+                        }),
+                );
                 entities.extend(patient.object_ids.into_iter().map(|object| EntityRef {
                     kind: ResolvedEntityKind::Object,
                     name: object,

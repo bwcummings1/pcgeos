@@ -100,12 +100,10 @@ time.sleep(0.1)
             && entity.event_ids.len() >= 2
     }));
     assert!(index.entities.iter().any(|entity| {
-        entity.entity.kind == ResolvedEntityKind::Resource
-            && entity.entity.name == "AppResource"
+        entity.entity.kind == ResolvedEntityKind::Resource && entity.entity.name == "AppResource"
     }));
     assert!(index.entities.iter().any(|entity| {
-        entity.entity.kind == ResolvedEntityKind::Object
-            && entity.entity.name == "^lui:0002"
+        entity.entity.kind == ResolvedEntityKind::Object && entity.entity.name == "^lui:0002"
     }));
     assert!(index.relations.iter().any(|relation| {
         let names = [
@@ -169,9 +167,15 @@ time.sleep(0.1)
             .len(),
         2
     );
-    assert_eq!(resolver.events_for_patient(session_id, "ui").unwrap().len(), 3);
     assert_eq!(
-        resolver.events_for_handle(session_id, "h:1001").unwrap().len(),
+        resolver.events_for_patient(session_id, "ui").unwrap().len(),
+        3
+    );
+    assert_eq!(
+        resolver
+            .events_for_handle(session_id, "h:1001")
+            .unwrap()
+            .len(),
         3
     );
     assert_eq!(
@@ -208,7 +212,9 @@ time.sleep(0.1)
             entity.kind == ResolvedEntityKind::SpanId && entity.name == "model-1"
         })
     );
-    assert!(event_entities.iter().any(|entity| {
-        entity.kind == ResolvedEntityKind::Patient && entity.name == "ui"
-    }));
+    assert!(
+        event_entities
+            .iter()
+            .any(|entity| { entity.kind == ResolvedEntityKind::Patient && entity.name == "ui" })
+    );
 }

@@ -125,7 +125,9 @@ impl DecodedValue {
     }
 
     pub fn typed_entities(&self) -> TypedEntityArtifacts {
-        self.as_json().map(extract_typed_entities).unwrap_or_default()
+        self.as_json()
+            .map(extract_typed_entities)
+            .unwrap_or_default()
     }
 
     pub fn preview(&self, limit: usize) -> String {
@@ -348,13 +350,20 @@ fn extract_typed_entities(root: &JsonValue) -> TypedEntityArtifacts {
     entities
 }
 
-fn collect_handles(container: &JsonValue, defaults: &EntityDefaults, entities: &mut TypedEntityArtifacts) {
+fn collect_handles(
+    container: &JsonValue,
+    defaults: &EntityDefaults,
+    entities: &mut TypedEntityArtifacts,
+) {
     for raw in entity_values(container, "handle", "handles", Some("handle")) {
         if let Some(handle) = parse_handle_record(raw, defaults) {
             let nested_defaults = EntityDefaults {
                 patient: handle.patient.clone().or_else(|| defaults.patient.clone()),
                 handle: Some(handle.key.clone()),
-                resource: handle.resource.clone().or_else(|| defaults.resource.clone()),
+                resource: handle
+                    .resource
+                    .clone()
+                    .or_else(|| defaults.resource.clone()),
             };
             entities.handles.push(handle);
             collect_resources(raw, &nested_defaults, entities);
@@ -371,7 +380,10 @@ fn collect_resources(
     for raw in entity_values(container, "resource", "resources", Some("resource")) {
         if let Some(resource) = parse_resource_record(raw, defaults) {
             let nested_defaults = EntityDefaults {
-                patient: resource.patient.clone().or_else(|| defaults.patient.clone()),
+                patient: resource
+                    .patient
+                    .clone()
+                    .or_else(|| defaults.patient.clone()),
                 handle: resource.handle.clone().or_else(|| defaults.handle.clone()),
                 resource: Some(resource.key.clone()),
             };
@@ -381,7 +393,11 @@ fn collect_resources(
     }
 }
 
-fn collect_objects(container: &JsonValue, defaults: &EntityDefaults, entities: &mut TypedEntityArtifacts) {
+fn collect_objects(
+    container: &JsonValue,
+    defaults: &EntityDefaults,
+    entities: &mut TypedEntityArtifacts,
+) {
     for raw in entity_values(container, "object", "objects", Some("object")) {
         if let Some(object) = parse_object_record(raw, defaults) {
             entities.objects.push(object);
@@ -527,7 +543,11 @@ fn field_u64(raw: &JsonValue, names: &[&str]) -> Option<u64> {
         .find_map(|name| object.get(*name).and_then(json_u64))
 }
 
-fn relation_keys(raw: &JsonValue, names: &[&str], key_fn: fn(&JsonValue) -> Option<String>) -> Vec<String> {
+fn relation_keys(
+    raw: &JsonValue,
+    names: &[&str],
+    key_fn: fn(&JsonValue) -> Option<String>,
+) -> Vec<String> {
     let Some(object) = raw.as_object() else {
         return Vec::new();
     };

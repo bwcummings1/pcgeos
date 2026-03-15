@@ -56,6 +56,45 @@ fn mock_command_host_can_attach_pump_query_and_script() {
     let scripted = host.execute("script ctx.event_count()").unwrap();
     assert_eq!(scripted.lines.len(), 1);
     assert!(scripted.lines[0].contains("result="));
+
+    let script_packages = host.execute("script packages").unwrap();
+    assert!(
+        script_packages
+            .lines
+            .iter()
+            .any(|line| line.contains("package=process loaded=false"))
+    );
+
+    let package_show = host.execute("script package show process").unwrap();
+    assert!(
+        package_show
+            .lines
+            .iter()
+            .any(|line| line.contains("export=process_event_total"))
+    );
+
+    let package_load = host.execute("script package load process").unwrap();
+    assert!(
+        package_load
+            .summary
+            .contains("loaded script package process")
+    );
+
+    let script_packages = host.execute("script packages").unwrap();
+    assert!(
+        script_packages
+            .lines
+            .iter()
+            .any(|line| line.contains("package=process loaded=true"))
+    );
+
+    let package_script = host
+        .execute(r#"script process_has_summary("attached")"#)
+        .unwrap();
+    assert_eq!(package_script.lines, vec!["result=true".to_string()]);
+
+    let autoloaded_stack = host.execute("script stack_frame_total()").unwrap();
+    assert_eq!(autoloaded_stack.lines, vec!["result=1".to_string()]);
 }
 
 #[test]
@@ -101,6 +140,27 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("value show <value_key>"))
     );
+    let automation_help = command_help(Some("automation"), CommandSurface::Shell);
+    assert!(
+        automation_help
+            .lines
+            .iter()
+            .any(|line| line.contains("script package load <name>"))
+    );
+    assert!(
+        automation_help
+            .lines
+            .iter()
+            .any(|line| line.contains("package=stack"))
+    );
+    let process_help = command_help(Some("process"), CommandSurface::Shell);
+    assert!(process_help.summary.contains("help process"));
+    assert!(
+        process_help
+            .lines
+            .iter()
+            .any(|line| line.contains("process_event_total"))
+    );
     assert!(
         command_help(None, CommandSurface::Shell)
             .lines
@@ -122,11 +182,22 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("breakpoint list"))
     );
+    let package_search = command_search("objwatch", CommandSurface::Shell);
+    assert!(
+        package_search
+            .lines
+            .iter()
+            .any(|line| line.contains("script-package=object"))
+    );
 
     let completions = command_completions("help br", CommandSurface::Shell);
     assert!(completions.contains(&"help breakpoint".to_string()));
+    let package_help_completions = command_completions("help pr", CommandSurface::Shell);
+    assert!(package_help_completions.contains(&"help process".to_string()));
     let tui_completions = command_completions("sou", CommandSurface::Tui);
     assert!(tui_completions.contains(&"source show <event_id> [before] [after]".to_string()));
+    let package_completions = command_completions("script package load pa", CommandSurface::Shell);
+    assert!(package_completions.contains(&"script package load patient".to_string()));
 
     assert_eq!(parse_command("stack").unwrap(), Command::Spans);
     assert_eq!(
@@ -185,6 +256,22 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             line: 4,
             before: 1,
             after: 2,
+        }
+    );
+    assert_eq!(
+        parse_command("script packages").unwrap(),
+        Command::ScriptPackages
+    );
+    assert_eq!(
+        parse_command("script package load patient").unwrap(),
+        Command::ScriptPackageLoad {
+            package: "patient".to_string(),
+        }
+    );
+    assert_eq!(
+        parse_command("script package show patient").unwrap(),
+        Command::ScriptPackageShow {
+            package: "patient".to_string(),
         }
     );
     assert_eq!(parse_command("patient").unwrap(), Command::Patients);
@@ -937,7 +1024,12 @@ time.sleep(0.1)
     assert!(patients.lines[0].contains("resources=1"));
 
     let patient = host.execute("patient show ui").unwrap();
-    assert!(patient.lines.iter().any(|line| line.contains("handles=h:1001")));
+    assert!(
+        patient
+            .lines
+            .iter()
+            .any(|line| line.contains("handles=h:1001"))
+    );
     assert!(
         patient
             .lines
@@ -951,15 +1043,30 @@ time.sleep(0.1)
     assert!(handles.lines[0].contains("resource=AppResource"));
 
     let handle = host.execute("handle show h:1001").unwrap();
-    assert!(handle.lines.iter().any(|line| line.contains("attached=true")));
-    assert!(handle.lines.iter().any(|line| line.contains("objects=^lui:0002")));
+    assert!(
+        handle
+            .lines
+            .iter()
+            .any(|line| line.contains("attached=true"))
+    );
+    assert!(
+        handle
+            .lines
+            .iter()
+            .any(|line| line.contains("objects=^lui:0002"))
+    );
 
     let resources = host.execute("resource").unwrap();
     assert_eq!(resources.lines.len(), 1);
     assert!(resources.lines[0].contains("resource=AppResource"));
 
     let resource = host.execute("resource show AppResource").unwrap();
-    assert!(resource.lines.iter().any(|line| line.contains("handle=h:1001")));
+    assert!(
+        resource
+            .lines
+            .iter()
+            .any(|line| line.contains("handle=h:1001"))
+    );
 
     let objects = host.execute("object").unwrap();
     assert_eq!(objects.lines.len(), 1);
@@ -995,7 +1102,12 @@ time.sleep(0.1)
     assert!(source_functions.lines[0].contains("function=run"));
     let source_function = host.execute("source function run").unwrap();
     assert_eq!(source_function.lines.len(), 5);
-    assert!(source_function.lines.iter().all(|line| line.contains("event=")));
+    assert!(
+        source_function
+            .lines
+            .iter()
+            .all(|line| line.contains("event="))
+    );
 
     let registers = host.execute("stack registers 0").unwrap();
     assert!(

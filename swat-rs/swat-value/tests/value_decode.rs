@@ -189,7 +189,10 @@ fn decoded_values_extract_typed_patient_handle_resource_and_object_records() {
     let entities = value.typed_entities();
     assert_eq!(entities.patients.len(), 1);
     assert_eq!(entities.patients[0].key, "ui");
-    assert_eq!(entities.patients[0].identifier.as_deref(), Some("patient-ui"));
+    assert_eq!(
+        entities.patients[0].identifier.as_deref(),
+        Some("patient-ui")
+    );
     assert_eq!(entities.patients[0].handle_ids, vec!["h:1001".to_string()]);
     assert_eq!(
         entities.patients[0].resource_names,

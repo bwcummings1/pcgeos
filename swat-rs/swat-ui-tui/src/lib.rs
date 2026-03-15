@@ -848,7 +848,10 @@ impl TuiApp {
                 let values = self.runtime.inspector().observed_values(session_id)?;
                 self.show_command_output(CommandOutput::new(
                     format!("{} observed value(s)", values.len()),
-                    values.iter().map(format_tui_observed_value_summary).collect(),
+                    values
+                        .iter()
+                        .map(format_tui_observed_value_summary)
+                        .collect(),
                 ));
             }
             Command::ValueShow { value_key } => {
@@ -965,7 +968,10 @@ impl TuiApp {
                 let functions = self.runtime.inspector().source_functions(session_id)?;
                 self.show_command_output(CommandOutput::new(
                     format!("{} source function(s)", functions.len()),
-                    functions.iter().map(format_tui_source_function_summary).collect(),
+                    functions
+                        .iter()
+                        .map(format_tui_source_function_summary)
+                        .collect(),
                 ));
             }
             Command::SourceFunction { function } => {
@@ -1935,7 +1941,10 @@ fn format_tui_patient_detail(detail: &swat_api::PatientDetail) -> Vec<String> {
         format!("patient={}", detail.patient.name),
         format!("role={}", detail.patient.role.as_deref().unwrap_or("-")),
         format!("status={}", detail.patient.status.as_deref().unwrap_or("-")),
-        format!("runtime={}", detail.patient.runtime.as_deref().unwrap_or("-")),
+        format!(
+            "runtime={}",
+            detail.patient.runtime.as_deref().unwrap_or("-")
+        ),
         format!("path={}", detail.patient.path.as_deref().unwrap_or("-")),
         format!("handles={}", join_tui_values(&detail.handles)),
         format!("resources={}", join_tui_values(&detail.resources)),
@@ -1958,12 +1967,35 @@ fn format_tui_handle_summary(handle: &HandleSummary) -> String {
 fn format_tui_handle_detail(detail: &swat_api::HandleDetail) -> Vec<String> {
     vec![
         format!("handle={}", detail.handle.key),
-        format!("patient={}", detail.handle.patient.as_deref().unwrap_or("-")),
-        format!("resource={}", detail.handle.resource.as_deref().unwrap_or("-")),
+        format!(
+            "patient={}",
+            detail.handle.patient.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "resource={}",
+            detail.handle.resource.as_deref().unwrap_or("-")
+        ),
         format!("kind={}", detail.handle.kind.as_deref().unwrap_or("-")),
-        format!("address={}", detail.handle.address.as_deref().unwrap_or("-")),
-        format!("size={}", detail.handle.size.map(|size| size.to_string()).unwrap_or_else(|| "-".to_string())),
-        format!("attached={}", detail.handle.attached.map(|value| value.to_string()).unwrap_or_else(|| "-".to_string())),
+        format!(
+            "address={}",
+            detail.handle.address.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "size={}",
+            detail
+                .handle
+                .size
+                .map(|size| size.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        format!(
+            "attached={}",
+            detail
+                .handle
+                .attached
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ),
         format!("state={}", join_tui_values(&detail.handle.state_flags)),
         format!("objects={}", join_tui_values(&detail.objects)),
         format!("sources={}", join_tui_values(&detail.source_files)),
@@ -1984,10 +2016,19 @@ fn format_tui_resource_summary(resource: &ResourceSummary) -> String {
 fn format_tui_resource_detail(detail: &swat_api::ResourceDetail) -> Vec<String> {
     vec![
         format!("resource={}", detail.resource.name),
-        format!("patient={}", detail.resource.patient.as_deref().unwrap_or("-")),
-        format!("handle={}", detail.resource.handle.as_deref().unwrap_or("-")),
+        format!(
+            "patient={}",
+            detail.resource.patient.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "handle={}",
+            detail.resource.handle.as_deref().unwrap_or("-")
+        ),
         format!("kind={}", detail.resource.kind.as_deref().unwrap_or("-")),
-        format!("source_file={}", detail.resource.source_file.as_deref().unwrap_or("-")),
+        format!(
+            "source_file={}",
+            detail.resource.source_file.as_deref().unwrap_or("-")
+        ),
         format!("objects={}", join_tui_values(&detail.objects)),
         format!("sources={}", join_tui_values(&detail.source_files)),
     ]
@@ -2007,11 +2048,23 @@ fn format_tui_object_summary(object: &ObjectSummary) -> String {
 fn format_tui_object_detail(detail: &swat_api::ObjectDetail) -> Vec<String> {
     vec![
         format!("object={}", detail.object.key),
-        format!("class={}", detail.object.class_name.as_deref().unwrap_or("-")),
-        format!("patient={}", detail.object.patient.as_deref().unwrap_or("-")),
+        format!(
+            "class={}",
+            detail.object.class_name.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "patient={}",
+            detail.object.patient.as_deref().unwrap_or("-")
+        ),
         format!("handle={}", detail.object.handle.as_deref().unwrap_or("-")),
-        format!("resource={}", detail.object.resource.as_deref().unwrap_or("-")),
-        format!("address={}", detail.object.address.as_deref().unwrap_or("-")),
+        format!(
+            "resource={}",
+            detail.object.resource.as_deref().unwrap_or("-")
+        ),
+        format!(
+            "address={}",
+            detail.object.address.as_deref().unwrap_or("-")
+        ),
         format!("state={}", join_tui_values(&detail.object.state_flags)),
         format!("sources={}", join_tui_values(&detail.source_files)),
     ]
@@ -2034,7 +2087,10 @@ fn format_tui_observed_value_detail(detail: &swat_api::ObservedValueDetail) -> V
     let mut lines = vec![
         format!("value_key={}", detail.value.value_key),
         format!("events={}", detail.value.event_count),
-        format!("last_summary={}", detail.value.last_summary.as_deref().unwrap_or("-")),
+        format!(
+            "last_summary={}",
+            detail.value.last_summary.as_deref().unwrap_or("-")
+        ),
         format!("preview={}", detail.value.preview.as_deref().unwrap_or("-")),
         "history:".to_string(),
     ];
@@ -2322,7 +2378,11 @@ time.sleep(0.1)
         assert!(app.messages.iter().any(|line| line.contains("patient=ui")));
 
         app.execute_command("handle show h:1001").unwrap();
-        assert!(app.messages.iter().any(|line| line.contains("attached=true")));
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("attached=true"))
+        );
 
         app.execute_command("object show ^lui:0002").unwrap();
         assert!(

@@ -165,6 +165,12 @@ time.sleep(0.1)
     }
 
     let mut host = ScriptHost::new(&store, session_id);
+    assert!(
+        host.available_packages()
+            .iter()
+            .any(|package| package.name == "patient")
+    );
+    assert!(host.loaded_packages().is_empty());
     assert_eq!(host.eval_i64("ctx.stack_frame_count()").unwrap(), 1);
     assert_eq!(host.eval_i64("ctx.stack_frame_local_count(0)").unwrap(), 1);
     assert_eq!(
@@ -183,11 +189,15 @@ time.sleep(0.1)
     );
     assert_eq!(host.eval_i64("ctx.patient_count()").unwrap(), 1);
     assert_eq!(host.eval_string("ctx.patient_name(0)").unwrap(), "ui");
-    assert_eq!(host.eval_i64(r#"ctx.patient_handle_count("ui")"#).unwrap(), 1);
+    assert_eq!(
+        host.eval_i64(r#"ctx.patient_handle_count("ui")"#).unwrap(),
+        1
+    );
     assert_eq!(host.eval_i64("ctx.handle_count()").unwrap(), 1);
     assert_eq!(host.eval_string("ctx.handle_name(0)").unwrap(), "h:1001");
     assert_eq!(
-        host.eval_i64(r#"ctx.handle_object_count("h:1001")"#).unwrap(),
+        host.eval_i64(r#"ctx.handle_object_count("h:1001")"#)
+            .unwrap(),
         1
     );
     assert_eq!(host.eval_i64("ctx.resource_count()").unwrap(), 1);
@@ -206,13 +216,15 @@ time.sleep(0.1)
         "^lui:0002"
     );
     assert_eq!(
-        host.eval_string(r#"ctx.object_class("^lui:0002")"#).unwrap(),
+        host.eval_string(r#"ctx.object_class("^lui:0002")"#)
+            .unwrap(),
         "GenApplication"
     );
     assert_eq!(host.eval_i64("ctx.value_count()").unwrap(), 1);
     assert_eq!(host.eval_string("ctx.value_key(0)").unwrap(), "agent.state");
     assert_eq!(
-        host.eval_i64(r#"ctx.value_event_count("agent.state")"#).unwrap(),
+        host.eval_i64(r#"ctx.value_event_count("agent.state")"#)
+            .unwrap(),
         1
     );
     assert_eq!(host.eval_i64("ctx.source_function_count()").unwrap(), 1);
@@ -225,6 +237,27 @@ time.sleep(0.1)
             .unwrap(),
         2
     );
+    assert_eq!(
+        host.eval_i64("process_event_total()").unwrap(),
+        host.eval_i64("ctx.event_count()").unwrap()
+    );
+    assert!(host.eval_bool(r#"process_has_summary("tool")"#).unwrap());
+    assert!(host.eval_bool(r#"stack_has_local(0, "query")"#).unwrap());
+    assert!(host.eval_bool(r#"stack_has_register(0, "pc")"#).unwrap());
+    assert!(host.eval_bool(r#"patient_has("ui")"#).unwrap());
+    assert!(host.eval_bool(r#"handle_has("h:1001")"#).unwrap());
+    assert!(host.eval_bool(r#"resource_has("AppResource")"#).unwrap());
+    assert!(
+        host.eval_bool(r#"object_class_is("^lui:0002", "GenApplication")"#)
+            .unwrap()
+    );
+    assert!(host.eval_bool(r#"source_has_function("run")"#).unwrap());
+    let loaded = host.loaded_packages();
+    assert!(loaded.iter().any(|package| package.name == "process"));
+    assert!(loaded.iter().any(|package| package.name == "stack"));
+    assert!(loaded.iter().any(|package| package.name == "patient"));
+    assert!(loaded.iter().any(|package| package.name == "object"));
+    assert!(loaded.iter().any(|package| package.name == "source"));
 }
 
 #[test]

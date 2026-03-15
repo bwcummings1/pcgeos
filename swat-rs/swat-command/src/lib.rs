@@ -2,7 +2,7 @@
 
 mod registry;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::thread;
 use std::time::Duration;
@@ -10,9 +10,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use swat_api::{
     BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
-    FrameLocal, FrameRegister, HandleSummary, LiveSessionApi, ObjectSummary,
-    ObservedValueSummary, PatientSummary, ResourceSummary, SourceFunctionSummary, StackFrame,
-    TraceInspector, WatchpointSpec, WatchpointSummary,
+    FrameLocal, FrameRegister, HandleSummary, LiveSessionApi, ObjectSummary, ObservedValueSummary,
+    PatientSummary, ResourceSummary, SourceFunctionSummary, StackFrame, TraceInspector,
+    WatchpointSpec, WatchpointSummary,
 };
 use swat_control::{
     StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
@@ -23,7 +23,7 @@ use swat_core::{
     SnapshotId, SwatError, SwatResult, TargetAdapter, TriggerId,
 };
 use swat_expr::parse_expression;
-use swat_script::ScriptHost;
+use swat_script::{ScriptHost, builtin_script_package, builtin_script_packages};
 use swat_session::SessionManager;
 use swat_store::SwatStore;
 
@@ -216,6 +216,13 @@ pub enum Command {
         before: usize,
         after: usize,
     },
+    ScriptPackages,
+    ScriptPackageLoad {
+        package: String,
+    },
+    ScriptPackageShow {
+        package: String,
+    },
     Script {
         script: String,
     },
@@ -243,6 +250,7 @@ pub struct CommandHost {
     trigger_engine: TriggerEngine,
     trigger_specs: BTreeMap<TriggerId, PersistedTriggerSpec>,
     predicate_specs: BTreeMap<String, PersistedPredicateSpec>,
+    script_packages: BTreeSet<String>,
     session_id: Option<SessionId>,
 }
 
@@ -255,6 +263,7 @@ impl CommandHost {
             trigger_engine: TriggerEngine::new(),
             trigger_specs: BTreeMap::new(),
             predicate_specs: BTreeMap::new(),
+            script_packages: BTreeSet::new(),
             session_id: None,
         }
     }
@@ -362,6 +371,9 @@ impl CommandHost {
                 before,
                 after,
             } => self.show_source_file_view(&file, line, before, after),
+            Command::ScriptPackages => Ok(self.list_script_packages()),
+            Command::ScriptPackageLoad { package } => self.load_script_package(&package),
+            Command::ScriptPackageShow { package } => self.show_script_package(&package),
             Command::Script { script } => self.run_script(&script),
         }
     }
@@ -744,15 +756,9 @@ impl CommandHost {
         let mut lines = vec![
             format!("patient={}", detail.patient.name),
             format!("key={}", detail.patient.key),
-            format!(
-                "id={}",
-                detail.patient.identifier.as_deref().unwrap_or("-")
-            ),
+            format!("id={}", detail.patient.identifier.as_deref().unwrap_or("-")),
             format!("role={}", detail.patient.role.as_deref().unwrap_or("-")),
-            format!(
-                "status={}",
-                detail.patient.status.as_deref().unwrap_or("-")
-            ),
+            format!("status={}", detail.patient.status.as_deref().unwrap_or("-")),
             format!(
                 "runtime={}",
                 detail.patient.runtime.as_deref().unwrap_or("-")
@@ -783,7 +789,10 @@ impl CommandHost {
                     .join(",")
             ));
         }
-        Ok(CommandOutput::new(format!("patient {}", detail.patient.name), lines))
+        Ok(CommandOutput::new(
+            format!("patient {}", detail.patient.name),
+            lines,
+        ))
     }
 
     fn list_handles(&self) -> SwatResult<CommandOutput> {
@@ -853,7 +862,10 @@ impl CommandHost {
                     .join(",")
             ));
         }
-        Ok(CommandOutput::new(format!("handle {}", detail.handle.key), lines))
+        Ok(CommandOutput::new(
+            format!("handle {}", detail.handle.key),
+            lines,
+        ))
     }
 
     fn list_resources(&self) -> SwatResult<CommandOutput> {
@@ -960,7 +972,10 @@ impl CommandHost {
                     .join(",")
             ));
         }
-        Ok(CommandOutput::new(format!("object {}", detail.object.key), lines))
+        Ok(CommandOutput::new(
+            format!("object {}", detail.object.key),
+            lines,
+        ))
     }
 
     fn list_values(&self) -> SwatResult<CommandOutput> {
@@ -2153,7 +2168,9 @@ impl CommandHost {
 
     fn list_source_function_events(&self, function: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let events = self.inspector().events_for_source_function(session_id, function)?;
+        let events = self
+            .inspector()
+            .events_for_source_function(session_id, function)?;
         Ok(CommandOutput::new(
             format!("{} event(s) for source function {}", events.len(), function),
             events.iter().map(format_event_line).collect(),
@@ -2234,9 +2251,90 @@ impl CommandHost {
         ))
     }
 
+    fn list_script_packages(&self) -> CommandOutput {
+        let lines = builtin_script_packages()
+            .into_iter()
+            .map(|package| {
+                let exports = package
+                    .exports
+                    .iter()
+                    .map(|export| export.name)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "package={} loaded={} exports={} summary={}",
+                    package.name,
+                    self.script_packages.contains(package.name),
+                    exports,
+                    package.summary
+                )
+            })
+            .collect::<Vec<_>>();
+        CommandOutput::new(format!("{} script package(s)", lines.len()), lines)
+    }
+
+    fn show_script_package(&self, package: &str) -> SwatResult<CommandOutput> {
+        let package = builtin_script_package(package)
+            .ok_or_else(|| SwatError::new(format!("unknown script package {package}")))?;
+        let mut lines = vec![
+            format!("loaded={}", self.script_packages.contains(package.name)),
+            format!(
+                "aliases={}",
+                if package.aliases.is_empty() {
+                    "-".to_string()
+                } else {
+                    package.aliases.join(",")
+                }
+            ),
+        ];
+        lines.extend(
+            package
+                .exports
+                .iter()
+                .map(|export| format!("export={} summary={}", export.name, export.summary)),
+        );
+        lines.extend(package.notes.iter().map(|note| format!("note={note}")));
+        lines.extend(
+            package
+                .legacy_references
+                .iter()
+                .map(|reference| format!("legacy={reference}")),
+        );
+        Ok(CommandOutput::new(
+            format!("script package {}", package.name),
+            lines,
+        ))
+    }
+
+    fn load_script_package(&mut self, package: &str) -> SwatResult<CommandOutput> {
+        let package = builtin_script_package(package)
+            .ok_or_else(|| SwatError::new(format!("unknown script package {package}")))?;
+        let inserted = self.script_packages.insert(package.name.to_string());
+        let exports = package
+            .exports
+            .iter()
+            .map(|export| export.name)
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(CommandOutput::new(
+            if inserted {
+                format!("loaded script package {}", package.name)
+            } else {
+                format!("script package {} already loaded", package.name)
+            },
+            vec![
+                format!("exports={exports}"),
+                format!("summary={}", package.summary),
+            ],
+        ))
+    }
+
     fn run_script(&self, script: &str) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let mut host = ScriptHost::new(self.store.as_ref(), session_id);
+        for package in &self.script_packages {
+            host.load_package(package)?;
+        }
         let value = host.eval_dynamic(script)?;
         Ok(CommandOutput::new(
             "script evaluated",
@@ -2395,7 +2493,8 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         return Ok(Command::Resources);
     }
     if let Some(rest) = trimmed.strip_prefix("resource ") {
-        return parse_entity_show(rest, "resource").map(|resource| Command::ResourceShow { resource });
+        return parse_entity_show(rest, "resource")
+            .map(|resource| Command::ResourceShow { resource });
     }
     if matches!(trimmed, "object" | "objects") {
         return Ok(Command::Objects);
@@ -2503,6 +2602,37 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         }
         return parse_source_show(rest);
     }
+    if trimmed == "script packages" {
+        return Ok(Command::ScriptPackages);
+    }
+    if let Some(rest) = trimmed.strip_prefix("script package ") {
+        let rest = rest.trim();
+        if let Some(rest) = rest.strip_prefix("load ") {
+            let package = rest.trim();
+            if package.is_empty() {
+                return Err(SwatError::new(
+                    "script package load requires a package name",
+                ));
+            }
+            return Ok(Command::ScriptPackageLoad {
+                package: package.to_string(),
+            });
+        }
+        if let Some(rest) = rest.strip_prefix("show ") {
+            let package = rest.trim();
+            if package.is_empty() {
+                return Err(SwatError::new(
+                    "script package show requires a package name",
+                ));
+            }
+            return Ok(Command::ScriptPackageShow {
+                package: package.to_string(),
+            });
+        }
+        return Err(SwatError::new(
+            "script package requires `load <name>` or `show <name>`",
+        ));
+    }
     if let Some(rest) = trimmed.strip_prefix("script ") {
         return Ok(Command::Script {
             script: rest.to_string(),
@@ -2543,9 +2673,14 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
 
 fn parse_entity_show(rest: &str, label: &str) -> SwatResult<String> {
     let trimmed = rest.trim();
-    let value = trimmed.strip_prefix("show ").map(str::trim).unwrap_or(trimmed);
+    let value = trimmed
+        .strip_prefix("show ")
+        .map(str::trim)
+        .unwrap_or(trimmed);
     if value.is_empty() {
-        return Err(SwatError::new(format!("{label} show requires an identifier")));
+        return Err(SwatError::new(format!(
+            "{label} show requires an identifier"
+        )));
     }
     Ok(value.to_string())
 }

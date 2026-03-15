@@ -942,7 +942,10 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
             .collect())
     }
 
-    pub fn source_functions(&self, session_id: SessionId) -> SwatResult<Vec<SourceFunctionSummary>> {
+    pub fn source_functions(
+        &self,
+        session_id: SessionId,
+    ) -> SwatResult<Vec<SourceFunctionSummary>> {
         let mut functions = BTreeMap::<(String, String), SourceFunctionSummaryBuilder>::new();
 
         for event in self.session_events(session_id) {
@@ -989,14 +992,12 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
             values
                 .entry(value_key.clone())
                 .or_insert_with(|| ObservedValueBuilder::new(value_key))
-                .observe(
-                    ObservedValueSample {
-                        event_id: event.event_id,
-                        sequence_no: event.sequence_no,
-                        summary: summary.clone(),
-                        preview,
-                    },
-                );
+                .observe(ObservedValueSample {
+                    event_id: event.event_id,
+                    sequence_no: event.sequence_no,
+                    summary: summary.clone(),
+                    preview,
+                });
         }
 
         Ok(values
@@ -1116,8 +1117,8 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
         let mut index = TypedEntityIndex::default();
 
         for event in self.session_events(session_id) {
-            let source_file = extract_event_source_location(self.store, &event)?
-                .map(|location| location.file);
+            let source_file =
+                extract_event_source_location(self.store, &event)?.map(|location| location.file);
             let event_id = event.event_id;
             let mut typed_entities = TypedEntityArtifacts::default();
             for decoded in self.decoded_artifacts(&event)? {
@@ -1588,8 +1589,7 @@ impl PatientSummaryBuilder {
             self.source_files.insert(source_file);
         }
         self.handles.extend(record.handle_ids.iter().cloned());
-        self.resources
-            .extend(record.resource_names.iter().cloned());
+        self.resources.extend(record.resource_names.iter().cloned());
         self.objects.extend(record.object_ids.iter().cloned());
     }
 
@@ -1692,8 +1692,7 @@ impl HandleSummaryBuilder {
         if self.attached.is_none() {
             self.attached = record.attached;
         }
-        self.state_flags
-            .extend(record.state_flags.iter().cloned());
+        self.state_flags.extend(record.state_flags.iter().cloned());
         self.event_ids.insert(event_id);
         if let Some(source_file) = source_file {
             self.source_files.insert(source_file);
@@ -1868,8 +1867,7 @@ impl ObjectSummaryBuilder {
         maybe_set_option(&mut self.handle, &record.handle);
         maybe_set_option(&mut self.resource, &record.resource);
         maybe_set_option(&mut self.address, &record.address);
-        self.state_flags
-            .extend(record.state_flags.iter().cloned());
+        self.state_flags.extend(record.state_flags.iter().cloned());
         self.event_ids.insert(event_id);
         if let Some(source_file) = source_file {
             self.source_files.insert(source_file);
