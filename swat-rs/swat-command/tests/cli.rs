@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -135,4 +136,34 @@ fn mock_cli_can_list_and_show_snapshots() {
     assert!(stdout.contains("cli checkpoint"));
     assert!(stdout.contains("Snapshot"));
     assert!(stdout.contains("artifact-show <event_id>"));
+}
+
+#[test]
+fn pcgeos_cli_exposes_stack_entity_memory_and_source_flows() {
+    let show_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("Appl/GeoPoint/show.goc")
+        .canonicalize()
+        .unwrap();
+    let stdout = run_cli(
+        &["pcgeos"],
+        &format!(
+            "attach\nstatus\npatient\npatient show geopoint\nhandle show geopoint.app:handle:ShowResource\nresource show geopoint.app:ShowResource\nobject show GeoPointDocument\nstack\nstack registers 0\nsource files\nsource file {}\nresume\npump\nvalue show pcgeos.memory.slide:0x0020\nexit\n",
+            show_path.display()
+        ),
+    );
+
+    assert!(stdout.contains("pc/geos fixture attached"));
+    assert!(stdout.contains("adapter=swat-adapter-pcgeos"));
+    assert!(stdout.contains("patient=geopoint"));
+    assert!(stdout.contains("handle=geopoint.app:handle:ShowResource"));
+    assert!(stdout.contains("resource=geopoint.app:ShowResource"));
+    assert!(stdout.contains("object=GeoPointDocument"));
+    assert!(stdout.contains("GeoPointApp::OpenDocument"));
+    assert!(stdout.contains("register=ax"));
+    assert!(stdout.contains("captured slide view state"));
+    assert!(stdout.contains(&format!("file={}", show_path.display())));
+    assert!(stdout.contains("pc/geos fixture resumed"));
+    assert!(stdout.contains("value pcgeos.memory.slide:0x0020"));
 }

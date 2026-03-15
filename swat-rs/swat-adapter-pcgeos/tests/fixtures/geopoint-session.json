@@ -37,7 +37,16 @@
           "locals": {
             "message": { "type": "word", "value": "0x002d" },
             "patient": { "type": "patient", "value": "geopoint" }
-          }
+          },
+          "memory": [
+            {
+              "key": "pcgeos.memory.kdata:0x0040",
+              "summary": "captured kernel data window",
+              "address": "kdata:0x0040",
+              "type": "bytes",
+              "value": ["0x10", "0x20", "0x30", "0x40"]
+            }
+          ]
         },
         {
           "boundary_id": 1002,
@@ -61,6 +70,15 @@
             "documentName": { "type": "char *", "value": "people__.000" },
             "resource": { "type": "resource", "value": "Interface" }
           },
+          "memory": [
+            {
+              "key": "pcgeos.memory.interface:0x0000",
+              "summary": "captured interface object bytes",
+              "address": "Interface:0x0000",
+              "type": "words",
+              "value": ["0x0135", "0x0100", "0x0042"]
+            }
+          ],
           "objects": [
             {
               "id": "GeoPointApp",
@@ -98,7 +116,16 @@
           },
           "locals": {
             "notification": { "type": "word", "value": "0x0100" }
-          }
+          },
+          "memory": [
+            {
+              "key": "pcgeos.memory.show:0x0010",
+              "summary": "captured show-resource state",
+              "address": "ShowResource:0x0010",
+              "type": "bytes",
+              "value": ["0x01", "0x00", "0x7f", "0x20"]
+            }
+          ]
         },
         {
           "boundary_id": 1012,
@@ -122,6 +149,15 @@
             "currentSlide": { "type": "word", "value": 3 },
             "defaultPatient": { "type": "patient", "value": "geopoint" }
           },
+          "memory": [
+            {
+              "key": "pcgeos.memory.slide:0x0020",
+              "summary": "captured slide view state",
+              "address": "ShowResource:0x0020",
+              "type": "words",
+              "value": ["0x0003", "0x0042", "0x0001"]
+            }
+          ],
           "objects": [
             {
               "id": "GeoPointDocument",

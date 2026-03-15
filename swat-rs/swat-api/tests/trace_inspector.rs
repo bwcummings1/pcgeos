@@ -1,10 +1,12 @@
 use std::fs;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
+use swat_adapter_pcgeos::PcGeosAdapter;
 use swat_api::{
     BreakpointActivity, BreakpointDisposition, BreakpointGroupKind, BreakpointLifetime,
     BreakpointState, LiveSessionApi, TraceInspector, WatchpointSpec,
@@ -14,6 +16,17 @@ use swat_core::{ControlAction, EventKind, EventPayload, PolicyVerdict, TriggerId
 use swat_expr::parse_expression;
 use swat_session::SessionManager;
 use swat_store::InMemoryStore;
+
+fn geopoint_show_path() -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("Appl/GeoPoint/show.goc")
+        .canonicalize()
+        .unwrap()
+        .display()
+        .to_string()
+}
 
 #[test]
 fn trace_inspector_can_find_boundary_events_and_artifact_text() {
@@ -405,6 +418,154 @@ time.sleep(0.1)
     assert_eq!(
         object_detail.source_files,
         vec!["/tmp/agent.py".to_string()]
+    );
+}
+
+#[test]
+fn trace_inspector_can_resolve_pcgeos_fixture_entities_and_source() {
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter = PcGeosAdapter::bundled_fixture().unwrap();
+    let mut trigger_engine = TriggerEngine::new();
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+
+    {
+        let mut api =
+            LiveSessionApi::new(&mut manager, &mut adapter, &mut store, &mut trigger_engine);
+        let resume = api.control(session_id, ControlAction::Resume).unwrap();
+        assert!(resume.value.response.accepted);
+    }
+
+    manager.pump(session_id, &mut adapter, &mut store).unwrap();
+
+    let inspector = TraceInspector::new(&store);
+    let show_path = geopoint_show_path();
+
+    let source_files = inspector.source_files(session_id).unwrap();
+    assert!(source_files.iter().any(|file| file.file == show_path));
+    assert!(
+        source_files
+            .iter()
+            .any(|file| file.file.ends_with("/ui.goc"))
+    );
+    assert!(source_files.iter().any(|file| file.is_real_path));
+
+    let frames = inspector.stack_frames(session_id).unwrap();
+    assert!(frames.iter().any(|frame| {
+        frame.label == "GeoPointApp::OpenDocument" && frame.source_line == Some(108)
+    }));
+    assert!(frames.iter().any(|frame| {
+        frame.label == "GeoPointApp::UpdateSlideView" && frame.source_line == Some(147)
+    }));
+
+    let current_frame = inspector
+        .stack_frame_by_boundary(session_id, swat_core::BoundaryId::from_raw(1012))
+        .unwrap()
+        .unwrap();
+    let current_inspection = inspector
+        .stack_frame_inspection(session_id, current_frame.frame_index)
+        .unwrap()
+        .unwrap();
+    assert!(
+        current_inspection
+            .registers
+            .iter()
+            .any(|register| register.name == "ax")
+    );
+    assert!(
+        current_inspection
+            .locals
+            .iter()
+            .any(|local| local.name == "currentSlide")
+    );
+
+    let patients = inspector.patients(session_id).unwrap();
+    assert!(patients.iter().any(|patient| patient.key == "geopoint"));
+    assert!(patients.iter().any(|patient| patient.key == "responder"));
+
+    let patient_detail = inspector
+        .patient_detail(session_id, "geopoint")
+        .unwrap()
+        .unwrap();
+    assert!(
+        patient_detail
+            .handles
+            .iter()
+            .any(|handle| handle == "geopoint.app:handle:Interface")
+    );
+    assert!(
+        patient_detail
+            .resources
+            .iter()
+            .any(|resource| resource == "geopoint.app:Interface")
+    );
+    assert!(
+        patient_detail
+            .objects
+            .iter()
+            .any(|object| object == "GeoPointApp")
+    );
+
+    let handle_detail = inspector
+        .handle_detail(session_id, "geopoint.app:handle:ShowResource")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        handle_detail.handle.resource.as_deref(),
+        Some("geopoint.app:ShowResource")
+    );
+
+    let resource_detail = inspector
+        .resource_detail(session_id, "geopoint.app:ShowResource")
+        .unwrap()
+        .unwrap();
+    assert!(
+        resource_detail
+            .objects
+            .iter()
+            .any(|object| object == "GeoPointDocument")
+    );
+
+    let object_detail = inspector
+        .object_detail(session_id, "GeoPointDocument")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        object_detail.object.class_name.as_deref(),
+        Some("GPointDocumentControlClass")
+    );
+
+    let values = inspector.observed_values(session_id).unwrap();
+    assert!(
+        values
+            .iter()
+            .any(|value| value.value_key == "pcgeos.memory.slide:0x0020")
+    );
+    let value_detail = inspector
+        .observed_value_detail(session_id, "pcgeos.memory.slide:0x0020")
+        .unwrap()
+        .unwrap();
+    assert!(
+        value_detail
+            .history
+            .iter()
+            .any(|sample| sample.summary.contains("slide view state"))
+    );
+
+    let show_events = inspector
+        .events_for_source_file(session_id, &show_path)
+        .unwrap();
+    assert!(!show_events.is_empty());
+    let source = inspector.source_inspection(&show_events[0], 1, 1).unwrap();
+    assert!(source.snippet.is_some());
+    assert!(source.failure.is_none());
+
+    assert!(
+        inspector
+            .replay_plan_for_boundary(session_id, swat_core::BoundaryId::from_raw(1012))
+            .has_boundary(swat_core::BoundaryId::from_raw(1012))
     );
 }
 

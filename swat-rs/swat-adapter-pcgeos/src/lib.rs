@@ -24,6 +24,17 @@ pub struct PcGeosFixtureValue {
     pub value: JsonValue,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PcGeosFixtureMemory {
+    pub key: String,
+    pub summary: String,
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default, rename = "type")]
+    pub type_name: Option<String>,
+    pub value: JsonValue,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PcGeosFixtureObject {
     pub id: String,
@@ -66,6 +77,8 @@ pub struct PcGeosFixtureFrame {
     pub registers: BTreeMap<String, PcGeosFixtureValue>,
     #[serde(default)]
     pub locals: BTreeMap<String, PcGeosFixtureValue>,
+    #[serde(default)]
+    pub memory: Vec<PcGeosFixtureMemory>,
     #[serde(default)]
     pub objects: Vec<PcGeosFixtureObject>,
 }
@@ -129,6 +142,10 @@ pub struct PcGeosAdapter {
 }
 
 impl PcGeosAdapter {
+    pub fn bundled_fixture() -> SwatResult<Self> {
+        Self::from_fixture_path(bundled_fixture_path())
+    }
+
     pub fn from_fixture(spec: PcGeosFixtureSpec) -> SwatResult<Self> {
         let inventory = build_inventory(&spec)?;
         validate_fixture_stop_references(&spec, &inventory)?;
@@ -263,6 +280,30 @@ impl PcGeosAdapter {
                 event = event.with_artifact(ArtifactBinding::Pending(alias));
             }
             emission.pending_events.push(event);
+            for memory in &frame.memory {
+                let alias = self.next_alias();
+                let artifact = self.memory_artifact(frame, memory);
+                let bytes = serde_json::to_vec(&artifact).map_err(|err| {
+                    SwatError::new(format!("failed to encode memory artifact: {err}"))
+                })?;
+                emission.pending_artifacts.push(PendingArtifact {
+                    alias,
+                    media_type: "application/json".to_string(),
+                    encoding: ArtifactEncoding::Json,
+                    access: ArtifactAccess::Lazy,
+                    bytes,
+                });
+                emission.pending_events.push(
+                    PendingEvent::new(
+                        EventKind::ValueObserved,
+                        EventPayload::Value {
+                            value_key: memory.key.clone(),
+                            summary: memory.summary.clone(),
+                        },
+                    )
+                    .with_artifact(ArtifactBinding::Pending(alias)),
+                );
+            }
         }
 
         for frame in stop.frames.iter().rev().skip(1) {
@@ -342,6 +383,36 @@ impl PcGeosAdapter {
             );
         }
 
+        JsonValue::Object(root)
+    }
+
+    fn memory_artifact(
+        &self,
+        frame: &PcGeosFixtureFrame,
+        memory: &PcGeosFixtureMemory,
+    ) -> JsonValue {
+        let mut root = Map::new();
+        root.insert(
+            "kind".to_string(),
+            JsonValue::String("pcgeos-memory".to_string()),
+        );
+        root.insert("name".to_string(), JsonValue::String(memory.key.clone()));
+        root.insert(
+            "function".to_string(),
+            JsonValue::String(frame.function.clone()),
+        );
+        root.insert(
+            "file".to_string(),
+            JsonValue::String(frame.file.display().to_string()),
+        );
+        root.insert("line".to_string(), JsonValue::Number(frame.line.into()));
+        if let Some(address) = &memory.address {
+            root.insert("address".to_string(), JsonValue::String(address.clone()));
+        }
+        if let Some(type_name) = &memory.type_name {
+            root.insert("type".to_string(), JsonValue::String(type_name.clone()));
+        }
+        root.insert("value".to_string(), memory.value.clone());
         JsonValue::Object(root)
     }
 
@@ -808,6 +879,20 @@ fn default_target_name() -> String {
 
 fn default_runtime_name() -> String {
     "pcgeos-fixture".to_string()
+}
+
+pub fn bundled_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("geopoint-session.json")
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("geopoint-session.json")
+        })
 }
 
 fn build_value_map(values: &BTreeMap<String, PcGeosFixtureValue>) -> Map<String, JsonValue> {

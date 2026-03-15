@@ -14,6 +14,7 @@ use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
+use swat_adapter_pcgeos::{PcGeosAdapter, bundled_fixture_path};
 use swat_command::{CommandHost, CommandSurface, command_completions};
 use swat_core::{SwatError, SwatResult, TargetAdapter};
 use swat_store::{FileStore, InMemoryStore, SwatStore};
@@ -172,6 +173,7 @@ enum Mode {
     Mock,
     Local { program: String, args: Vec<String> },
     Agent { program: String, args: Vec<String> },
+    PcGeos { fixture_path: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,15 +230,16 @@ fn parse_cli(args: Vec<String>) -> SwatResult<CliConfig> {
         "local" => parse_program_mode(pending, "local")?,
         "agent" => match parse_program_mode(pending, "agent")? {
             Mode::Local { program, args } => Mode::Agent { program, args },
-            Mode::Mock | Mode::Agent { .. } => unreachable!(),
+            Mode::Mock | Mode::Agent { .. } | Mode::PcGeos { .. } => unreachable!(),
         },
+        "pcgeos" => parse_pcgeos_mode(pending)?,
         "--help" | "-h" | "help" => {
             print_usage();
             std::process::exit(0);
         }
         other => {
             return Err(usage_error(format!(
-                "unknown mode '{other}' (expected mock, local, or agent)"
+                "unknown mode '{other}' (expected mock, local, agent, or pcgeos)"
             )));
         }
     });
@@ -260,6 +263,17 @@ fn parse_program_mode(args: Vec<String>, label: &str) -> SwatResult<Mode> {
     Ok(Mode::Local { program, args })
 }
 
+fn parse_pcgeos_mode(args: Vec<String>) -> SwatResult<Mode> {
+    if args.len() > 1 {
+        return Err(usage_error(
+            "pcgeos mode accepts at most one optional fixture path",
+        ));
+    }
+    Ok(Mode::PcGeos {
+        fixture_path: args.into_iter().next(),
+    })
+}
+
 fn build_adapter(config: &CliConfig) -> SwatResult<Box<dyn TargetAdapter>> {
     match &config.mode {
         Mode::Mock => Ok(Box::new(MockAdapter::default())),
@@ -269,6 +283,13 @@ fn build_adapter(config: &CliConfig) -> SwatResult<Box<dyn TargetAdapter>> {
         Mode::Agent { program, args } => Ok(Box::new(AgentRuntimeAdapter::new(
             AgentRuntimeSpec::new(program.clone()).with_args(args.clone()),
         ))),
+        Mode::PcGeos { fixture_path } => {
+            let adapter = match fixture_path {
+                Some(path) => PcGeosAdapter::from_fixture_path(path)?,
+                None => PcGeosAdapter::from_fixture_path(bundled_fixture_path())?,
+            };
+            Ok(Box::new(adapter))
+        }
     }
 }
 
@@ -289,7 +310,7 @@ fn print_usage() {
 }
 
 fn usage_text() -> &'static str {
-    "usage: swat-command [--store <path>] [--triggers <path>] <mock|local|agent> [program] [args...]
+    "usage: swat-command [--store <path>] [--triggers <path>] <mock|local|agent|pcgeos> [program|fixture] [args...]
 
 modes:
   mock
@@ -298,6 +319,8 @@ modes:
     observe a generic local process via swat-adapter-local
   agent <program> [args...]
     observe an agent-runtime emitter via swat-adapter-agent
+  pcgeos [fixture.json]
+    load the bundled PC/GEOS replay fixture, or a custom fixture file, via swat-adapter-pcgeos
 
 shell:
   commands are read from stdin

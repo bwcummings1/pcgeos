@@ -62,15 +62,16 @@ fn parse_cli(args: Vec<String>) -> SwatResult<TuiConfig> {
         "local" => parse_program_mode(pending, "local")?,
         "agent" => match parse_program_mode(pending, "agent")? {
             Mode::Local { program, args } => Mode::Agent { program, args },
-            Mode::Mock | Mode::Agent { .. } => unreachable!(),
+            Mode::Mock | Mode::Agent { .. } | Mode::PcGeos { .. } => unreachable!(),
         },
+        "pcgeos" => parse_pcgeos_mode(pending)?,
         "--help" | "-h" | "help" => {
             print_usage();
             std::process::exit(0);
         }
         other => {
             return Err(usage_error(format!(
-                "unknown mode '{other}' (expected mock, local, or agent)"
+                "unknown mode '{other}' (expected mock, local, agent, or pcgeos)"
             )));
         }
     };
@@ -95,6 +96,17 @@ fn parse_program_mode(args: Vec<String>, label: &str) -> SwatResult<Mode> {
     Ok(Mode::Local { program, args })
 }
 
+fn parse_pcgeos_mode(args: Vec<String>) -> SwatResult<Mode> {
+    if args.len() > 1 {
+        return Err(usage_error(
+            "pcgeos mode accepts at most one optional fixture path",
+        ));
+    }
+    Ok(Mode::PcGeos {
+        fixture_path: args.into_iter().next(),
+    })
+}
+
 fn usage_error(message: impl Into<String>) -> SwatError {
     let message = message.into();
     SwatError::new(format!("{message}\n{}", usage_text()))
@@ -105,7 +117,7 @@ fn print_usage() {
 }
 
 fn usage_text() -> &'static str {
-    "usage: swat-ui-tui [--store <path>] [--headless] [--ticks <n>] <mock|local|agent> [program] [args...]
+    "usage: swat-ui-tui [--store <path>] [--headless] [--ticks <n>] <mock|local|agent|pcgeos> [program|fixture] [args...]
 
 modes:
   mock
@@ -114,6 +126,8 @@ modes:
     observe a generic local process via swat-adapter-local
   agent <program> [args...]
     observe an agent-runtime emitter via swat-adapter-agent
+  pcgeos [fixture.json]
+    load the bundled PC/GEOS replay fixture, or a custom fixture file, via swat-adapter-pcgeos
 
 tui:
   interactive keys: q quit, : command, a attach, u pump, r resume, p pause, s step

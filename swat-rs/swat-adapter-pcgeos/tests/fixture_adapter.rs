@@ -186,7 +186,7 @@ fn fixture_adapter_replays_recorded_boundary_artifacts() {
         })
         .unwrap();
     assert_eq!(replayed_boundary.artifact_refs[0], recorded_artifact_ref);
-    assert_eq!(store.artifact_count(), artifact_count_before_replay + 1);
+    assert_eq!(store.artifact_count(), artifact_count_before_replay + 3);
     assert!(replay_pump.stored_events.iter().any(|event| {
         matches!(
             &event.payload,

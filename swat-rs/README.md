@@ -317,7 +317,7 @@ runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
 with an event list, stack/entity context pane, source preview, artifact preview,
-live command entry, and support for mock, local, and agent runtimes. It also
+live command entry, and support for mock, local, agent, and PC/GEOS runtimes. It also
 supports shared breakpoint/watchpoint command execution, typed frame-local and
 frame-register inspection commands, typed patient/handle/resource/object
 inspection commands plus event-pane entity projections, shared `value` history
@@ -353,6 +353,10 @@ Run the trigger-control demo with:
 Run the live command shell with:
 
 `cargo run -p swat-command -- mock`
+
+Run the PC/GEOS fixture shell with:
+
+`cargo run -p swat-command -- pcgeos`
 
 ## Continuous execution harness
 
@@ -397,9 +401,13 @@ Run the TUI in interactive mode with:
 
 `cargo run -p swat-ui-tui -- mock`
 
+`cargo run -p swat-ui-tui -- pcgeos`
+
 Run the TUI headless demos with:
 
 `cargo run -p swat-ui-tui -- --headless --ticks 4 mock`
+
+`cargo run -p swat-ui-tui -- --headless --ticks 2 pcgeos`
 
 `cargo run -p swat-ui-tui -- --headless --ticks 6 local python3 -u -c "import time; print('hello from local tui'); time.sleep(0.1)"`
 

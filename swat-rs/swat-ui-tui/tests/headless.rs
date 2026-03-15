@@ -61,3 +61,15 @@ time.sleep(0.1)
     assert!(rendered.contains("ToolBoundary"));
     assert!(rendered.contains("tool completed"));
 }
+
+#[test]
+fn pcgeos_headless_dashboard_attaches_and_renders_fixture_state() {
+    let mut config = TuiConfig::new(Mode::PcGeos { fixture_path: None });
+    config.headless_ticks = 2;
+
+    let rendered = run_headless(config).unwrap();
+    assert!(rendered.contains("pcgeos-fixture"));
+    assert!(rendered.contains("Execution"));
+    assert!(rendered.contains("GeoPointApp::OpenDocument"));
+    assert!(rendered.contains("show.goc"));
+}

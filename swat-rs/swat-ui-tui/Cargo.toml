@@ -10,6 +10,7 @@ ratatui.workspace = true
 swat-adapter-agent = { path = "../swat-adapter-agent" }
 swat-adapter-local = { path = "../swat-adapter-local" }
 swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-adapter-pcgeos = { path = "../swat-adapter-pcgeos" }
 swat-api = { path = "../swat-api" }
 swat-command = { path = "../swat-command" }
 swat-control = { path = "../swat-control" }

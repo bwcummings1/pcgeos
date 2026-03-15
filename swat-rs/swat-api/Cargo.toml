@@ -20,3 +20,4 @@ serde_json.workspace = true
 swat-adapter-agent = { path = "../swat-adapter-agent" }
 swat-adapter-local = { path = "../swat-adapter-local" }
 swat-adapter-mock = { path = "../swat-adapter-mock" }
+swat-adapter-pcgeos = { path = "../swat-adapter-pcgeos" }

@@ -19,6 +19,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
+use swat_adapter_pcgeos::{PcGeosAdapter, bundled_fixture_path};
 use swat_api::{
     HandleSummary, LiveSessionApi, ObjectSummary, ObservedValueSummary, PatientSummary,
     ResourceSummary, SourceFunctionSummary, StackFrame, TraceInspector, WatchpointSpec,
@@ -50,6 +51,7 @@ pub enum Mode {
     Mock,
     Local { program: String, args: Vec<String> },
     Agent { program: String, args: Vec<String> },
+    PcGeos { fixture_path: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2283,6 +2285,13 @@ pub fn build_adapter(mode: &Mode) -> SwatResult<Box<dyn TargetAdapter>> {
         Mode::Agent { program, args } => Ok(Box::new(AgentRuntimeAdapter::new(
             AgentRuntimeSpec::new(program.clone()).with_args(args.clone()),
         ))),
+        Mode::PcGeos { fixture_path } => {
+            let adapter = match fixture_path {
+                Some(path) => PcGeosAdapter::from_fixture_path(path)?,
+                None => PcGeosAdapter::from_fixture_path(bundled_fixture_path())?,
+            };
+            Ok(Box::new(adapter))
+        }
     }
 }
 
@@ -2661,6 +2670,7 @@ fn buffer_to_string(buffer: &Buffer) -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -2882,6 +2892,57 @@ time.sleep(0.1)
             app.messages
                 .iter()
                 .any(|line| line.contains("function=run"))
+        );
+    }
+
+    #[test]
+    fn tui_command_entry_can_inspect_pcgeos_fixture_state() {
+        let show_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("Appl/GeoPoint/show.goc")
+            .canonicalize()
+            .unwrap();
+
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::PcGeos { fixture_path: None })).unwrap();
+        app.attach().unwrap();
+
+        app.execute_command("patient show geopoint").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("patient=geopoint"))
+        );
+
+        app.execute_command("stack").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("GeoPointApp::OpenDocument"))
+        );
+
+        app.execute_command("stack registers 0").unwrap();
+        assert!(app.messages.iter().any(|line| line.contains("register=ax")));
+
+        app.resume().unwrap();
+        app.on_tick().unwrap();
+
+        app.execute_command("value show pcgeos.memory.slide:0x0020")
+            .unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("captured slide view state"))
+        );
+
+        app.execute_command("source file /home/ubuntu/pcgeos/Appl/GeoPoint/show.goc")
+            .unwrap();
+        let lines = app.source_lines(None).unwrap();
+        assert!(!lines.is_empty());
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains(show_path.display().to_string().as_str()))
         );
     }
 
