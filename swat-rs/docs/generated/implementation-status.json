@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 17,
-    "pending": 4,
+    "done": 18,
+    "pending": 3,
     "blocked": 0
   },
   "tasks": [
@@ -164,12 +164,12 @@
     },
     {
       "task": "T-018",
-      "status": "pending",
+      "status": "done",
       "milestone": "M6",
       "description": "Implement `swat-adapter-pcgeos` host-side adapter and protocol bridge.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Support replay-fixture mode first if necessary, then live target/emulator paths."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "36eea65b",
+      "notes": "`swat-adapter-pcgeos` now provides a fixture-first PC/GEOS adapter over real manifests/symbol VMs, and `swat-replay` now replays any boundary-payload event rather than only model/tool kinds."
     },
     {
       "task": "T-019",
