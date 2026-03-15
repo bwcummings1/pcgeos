@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 11,
-    "pending": 10,
+    "done": 12,
+    "pending": 9,
     "blocked": 0
   },
   "tasks": [
@@ -110,12 +110,12 @@
     },
     {
       "task": "T-012",
-      "status": "pending",
+      "status": "done",
       "milestone": "M3",
       "description": "Add typed patient/handle/resource/object inspection models and debugger-native presentations.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Keep `swat-core` target-neutral while enriching shared value/resolver layers."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "39e68bfb",
+      "notes": "Shared value/resolver/API layers now project typed patient/handle/resource/object models, and shell/TUI/script surfaces expose debugger-native inspection without changing `swat-core`."
     },
     {
       "task": "T-013",
