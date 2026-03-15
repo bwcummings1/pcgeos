@@ -810,6 +810,7 @@ dependencies = [
 name = "swat-api"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "swat-adapter-agent",
  "swat-adapter-local",
  "swat-adapter-mock",
@@ -921,6 +922,7 @@ name = "swat-script"
 version = "0.1.0"
 dependencies = [
  "rhai",
+ "swat-adapter-agent",
  "swat-adapter-mock",
  "swat-adapter-python",
  "swat-api",

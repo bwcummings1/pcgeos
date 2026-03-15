@@ -149,8 +149,8 @@ const COMMANDS: &[CommandDescriptor] = &[
     },
     CommandDescriptor {
         key: "stack",
-        synopsis: "stack | stack frame <index> | stack show <boundary_id>",
-        summary: "inspect frame-oriented stack projections over boundary spans",
+        synopsis: "stack | stack frame <index> | stack locals <index> | stack registers <index> | stack show <boundary_id>",
+        summary: "inspect frame-oriented stack projections plus typed locals/registers",
         aliases: &["spans", "span"],
         tui_supported: true,
     },
@@ -411,9 +411,15 @@ const FAMILIES: &[CommandFamily] = &[
         commands: &["stack"],
         notes: &[
             "Stack frames are projected from shared boundary spans through `swat-api`, not rebuilt inside the shell or TUI.",
-            "Use `stack frame <index>` for debugger-style frame details and `stack show <boundary_id>` when you need the raw span identity.",
+            "Use `stack frame <index>` for debugger-style frame details, `stack locals <index>` and `stack registers <index>` for typed bindings, and `stack show <boundary_id>` when you need the raw span identity.",
         ],
-        examples: &["stack", "stack frame 0", "stack show 42"],
+        examples: &[
+            "stack",
+            "stack frame 0",
+            "stack locals 0",
+            "stack registers 0",
+            "stack show 42",
+        ],
     },
     CommandFamily {
         topic: "source",

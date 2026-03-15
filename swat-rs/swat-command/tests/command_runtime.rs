@@ -80,6 +80,13 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("source file <path>"))
     );
+    let stack_help = command_help(Some("stack"), CommandSurface::Shell);
+    assert!(
+        stack_help
+            .lines
+            .iter()
+            .any(|line| line.contains("stack locals <index>"))
+    );
     assert!(
         command_help(None, CommandSurface::Shell)
             .lines
@@ -117,6 +124,14 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
     assert_eq!(
         parse_command("stack frame 0").unwrap(),
         Command::Frame { frame_index: 0 }
+    );
+    assert_eq!(
+        parse_command("stack locals 0").unwrap(),
+        Command::FrameLocals { frame_index: 0 }
+    );
+    assert_eq!(
+        parse_command("stack registers 0").unwrap(),
+        Command::FrameRegisters { frame_index: 0 }
     );
     assert_eq!(
         parse_command("stack show 42").unwrap(),
@@ -789,7 +804,7 @@ def emit(record):
 
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested", "file": "/tmp/agent.py", "line": 12, "function": "run"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 time.sleep(0.1)
@@ -849,6 +864,26 @@ time.sleep(0.1)
             .any(|line| line.contains("label=web_search"))
     );
     assert!(frame.lines.iter().any(|line| line.contains("events:")));
+    assert!(frame.lines.iter().any(|line| line.contains("locals=2")));
+    assert!(frame.lines.iter().any(|line| line.contains("registers=2")));
+
+    let locals = host.execute("stack locals 0").unwrap();
+    assert!(locals.lines.iter().any(|line| line.contains("local=query")));
+    assert!(locals.lines.iter().any(|line| line.contains("local=limit")));
+
+    let registers = host.execute("stack registers 0").unwrap();
+    assert!(
+        registers
+            .lines
+            .iter()
+            .any(|line| line.contains("register=pc"))
+    );
+    assert!(
+        registers
+            .lines
+            .iter()
+            .any(|line| line.contains("register=phase"))
+    );
 
     let model_boundary = spans
         .lines

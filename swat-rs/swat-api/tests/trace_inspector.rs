@@ -112,7 +112,7 @@ def emit(record):
 
 emit({"kind": "model", "phase": "request", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model requested"})
 emit({"kind": "planner", "phase": "start", "name": "draft-answer", "summary": "planner started", "file": "/tmp/agent.py", "line": 10, "function": "run"})
-emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run"})
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}, "limit": {"type": "int", "value": 3}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}, "phase": {"group": "trace", "type": "str", "value": "start"}}})
 emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-7", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
 emit({"kind": "model", "phase": "response", "span_id": "model-1", "correlation_id": "req-7", "name": "gpt-4.1-mini", "summary": "model responded", "file": "/tmp/agent.py", "line": 21, "function": "run"})
 emit({"kind": "state", "phase": "update", "name": "memory.turn", "summary": "memory updated"})
@@ -235,6 +235,42 @@ time.sleep(0.1)
             .unwrap()
             .label,
         "gpt-4.1-mini"
+    );
+    let frame_inspection = inspector
+        .stack_frame_inspection(session_id, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame_inspection.locals.len(), 2);
+    assert_eq!(frame_inspection.locals[0].name, "limit");
+    assert_eq!(frame_inspection.locals[0].type_name.as_deref(), Some("int"));
+    assert_eq!(frame_inspection.locals[1].name, "query");
+    assert_eq!(
+        frame_inspection.locals[1].value_kind,
+        swat_api::InspectedValueKind::String
+    );
+    assert_eq!(frame_inspection.registers.len(), 2);
+    assert_eq!(
+        frame_inspection.registers[0].group.as_deref(),
+        Some("trace")
+    );
+    assert_eq!(frame_inspection.registers[0].name, "pc");
+    assert_eq!(
+        inspector
+            .stack_frame_locals(session_id, 0)
+            .unwrap()
+            .iter()
+            .map(|local| local.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["limit", "query"]
+    );
+    assert_eq!(
+        inspector
+            .stack_frame_registers(session_id, 0)
+            .unwrap()
+            .iter()
+            .map(|register| register.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pc", "phase"]
     );
 }
 

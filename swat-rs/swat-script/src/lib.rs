@@ -196,6 +196,56 @@ impl ScriptContext {
             .unwrap_or_default()
     }
 
+    pub fn stack_frame_local_count(&mut self, frame_index: i64) -> i64 {
+        if frame_index < 0 {
+            return 0;
+        }
+        self.inspector()
+            .stack_frame_locals(self.session_id, frame_index as usize)
+            .map(|locals| locals.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn stack_frame_local_name(&mut self, frame_index: i64, local_index: i64) -> String {
+        if frame_index < 0 || local_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .stack_frame_locals(self.session_id, frame_index as usize)
+            .ok()
+            .and_then(|locals| {
+                locals
+                    .get(local_index as usize)
+                    .map(|local| local.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn stack_frame_register_count(&mut self, frame_index: i64) -> i64 {
+        if frame_index < 0 {
+            return 0;
+        }
+        self.inspector()
+            .stack_frame_registers(self.session_id, frame_index as usize)
+            .map(|registers| registers.len() as i64)
+            .unwrap_or(0)
+    }
+
+    pub fn stack_frame_register_name(&mut self, frame_index: i64, register_index: i64) -> String {
+        if frame_index < 0 || register_index < 0 {
+            return String::new();
+        }
+        self.inspector()
+            .stack_frame_registers(self.session_id, frame_index as usize)
+            .ok()
+            .and_then(|registers| {
+                registers
+                    .get(register_index as usize)
+                    .map(|register| register.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
     pub fn source_file_count(&mut self) -> i64 {
         self.inspector()
             .source_files(self.session_id)
@@ -253,6 +303,22 @@ impl ScriptHost {
         engine.register_fn("source_contains", ScriptContext::source_contains);
         engine.register_fn("stack_frame_count", ScriptContext::stack_frame_count);
         engine.register_fn("stack_frame_label", ScriptContext::stack_frame_label);
+        engine.register_fn(
+            "stack_frame_local_count",
+            ScriptContext::stack_frame_local_count,
+        );
+        engine.register_fn(
+            "stack_frame_local_name",
+            ScriptContext::stack_frame_local_name,
+        );
+        engine.register_fn(
+            "stack_frame_register_count",
+            ScriptContext::stack_frame_register_count,
+        );
+        engine.register_fn(
+            "stack_frame_register_name",
+            ScriptContext::stack_frame_register_name,
+        );
         engine.register_fn("source_file_count", ScriptContext::source_file_count);
         engine.register_fn(
             "source_file_event_count",
@@ -505,6 +571,66 @@ impl<'a, A: TargetAdapter + ?Sized, S: SwatStore + ?Sized> LiveScriptSession<'a,
             .inspector()
             .stack_frame(session_id, frame_index as usize)?
             .map(|frame| frame.label)
+            .unwrap_or_default())
+    }
+
+    pub fn stack_frame_local_count(&mut self, frame_index: i64) -> SwatResult<i64> {
+        if frame_index < 0 {
+            return Ok(0);
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .stack_frame_locals(session_id, frame_index as usize)?
+            .len() as i64)
+    }
+
+    pub fn stack_frame_local_name(
+        &mut self,
+        frame_index: i64,
+        local_index: i64,
+    ) -> SwatResult<String> {
+        if frame_index < 0 || local_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .stack_frame_locals(session_id, frame_index as usize)?
+            .get(local_index as usize)
+            .map(|local| local.name.clone())
+            .unwrap_or_default())
+    }
+
+    pub fn stack_frame_register_count(&mut self, frame_index: i64) -> SwatResult<i64> {
+        if frame_index < 0 {
+            return Ok(0);
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .stack_frame_registers(session_id, frame_index as usize)?
+            .len() as i64)
+    }
+
+    pub fn stack_frame_register_name(
+        &mut self,
+        frame_index: i64,
+        register_index: i64,
+    ) -> SwatResult<String> {
+        if frame_index < 0 || register_index < 0 {
+            return Ok(String::new());
+        }
+        let session_id = self.session_id;
+        Ok(self
+            .api()
+            .inspector()
+            .stack_frame_registers(session_id, frame_index as usize)?
+            .get(register_index as usize)
+            .map(|register| register.name.clone())
             .unwrap_or_default())
     }
 

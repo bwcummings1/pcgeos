@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value as JsonValue;
 use swat_control::{
     Trigger, TriggerAction, TriggerEngine, TriggerPredicate, TriggerPredicateDefinition,
     format_trigger_predicate,
@@ -57,6 +58,53 @@ pub struct StackFrame {
     pub source_line: Option<u64>,
     pub entry_summary: String,
     pub latest_summary: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InspectedValueKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Json,
+}
+
+impl InspectedValueKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Bool => "bool",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Json => "json",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameLocal {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub value_kind: InspectedValueKind,
+    pub preview: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameRegister {
+    pub name: String,
+    pub group: Option<String>,
+    pub type_name: Option<String>,
+    pub value_kind: InspectedValueKind,
+    pub preview: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackFrameInspection {
+    pub frame: StackFrame,
+    pub locals: Vec<FrameLocal>,
+    pub registers: Vec<FrameRegister>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -502,6 +550,46 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
             .find(|frame| frame.boundary_id == boundary_id))
     }
 
+    pub fn stack_frame_inspection(
+        &self,
+        session_id: SessionId,
+        frame_index: usize,
+    ) -> SwatResult<Option<StackFrameInspection>> {
+        let Some(frame) = self.stack_frame(session_id, frame_index)? else {
+            return Ok(None);
+        };
+        let events = self.boundary_span(session_id, frame.boundary_id);
+        let locals = self.extract_frame_locals(&events)?;
+        let registers = self.extract_frame_registers(&events)?;
+        Ok(Some(StackFrameInspection {
+            frame,
+            locals,
+            registers,
+        }))
+    }
+
+    pub fn stack_frame_locals(
+        &self,
+        session_id: SessionId,
+        frame_index: usize,
+    ) -> SwatResult<Vec<FrameLocal>> {
+        Ok(self
+            .stack_frame_inspection(session_id, frame_index)?
+            .map(|inspection| inspection.locals)
+            .unwrap_or_default())
+    }
+
+    pub fn stack_frame_registers(
+        &self,
+        session_id: SessionId,
+        frame_index: usize,
+    ) -> SwatResult<Vec<FrameRegister>> {
+        Ok(self
+            .stack_frame_inspection(session_id, frame_index)?
+            .map(|inspection| inspection.registers)
+            .unwrap_or_default())
+    }
+
     pub fn entity_relations(&self, session_id: SessionId) -> SwatResult<Vec<EntityRelation>> {
         TraceResolver::new(self.store).entity_relations(session_id)
     }
@@ -719,6 +807,42 @@ impl<'a, S: SwatStore + ?Sized> TraceInspector<'a, S> {
 
         Ok(metadata)
     }
+
+    fn extract_frame_locals(&self, events: &[EventEnvelope]) -> SwatResult<Vec<FrameLocal>> {
+        let mut locals = BTreeMap::new();
+        for event in events {
+            for decoded in self.decoded_artifacts(event)? {
+                let Some(JsonValue::Object(root)) = decoded.as_json() else {
+                    continue;
+                };
+                let Some(JsonValue::Object(entries)) = root.get("locals") else {
+                    continue;
+                };
+                for (name, raw) in entries {
+                    locals.insert(name.clone(), build_frame_local(name, raw));
+                }
+            }
+        }
+        Ok(locals.into_values().collect())
+    }
+
+    fn extract_frame_registers(&self, events: &[EventEnvelope]) -> SwatResult<Vec<FrameRegister>> {
+        let mut registers = BTreeMap::new();
+        for event in events {
+            for decoded in self.decoded_artifacts(event)? {
+                let Some(JsonValue::Object(root)) = decoded.as_json() else {
+                    continue;
+                };
+                let Some(JsonValue::Object(entries)) = root.get("registers") else {
+                    continue;
+                };
+                for (name, raw) in entries {
+                    registers.insert(name.clone(), build_frame_register(name, raw));
+                }
+            }
+        }
+        Ok(registers.into_values().collect())
+    }
 }
 
 #[derive(Default)]
@@ -729,6 +853,105 @@ struct StackFrameMetadata {
     function: Option<String>,
     source_file: Option<String>,
     source_line: Option<u64>,
+}
+
+fn build_frame_local(name: &str, raw: &JsonValue) -> FrameLocal {
+    let (type_name, value) = unpack_frame_value(raw);
+    let inspection = inspect_json_value(value);
+    FrameLocal {
+        name: name.to_string(),
+        type_name,
+        value_kind: inspection.kind,
+        preview: inspection.preview,
+        detail: inspection.detail,
+    }
+}
+
+fn build_frame_register(name: &str, raw: &JsonValue) -> FrameRegister {
+    let (type_name, value, group) = unpack_register_value(raw);
+    let inspection = inspect_json_value(value);
+    FrameRegister {
+        name: name.to_string(),
+        group,
+        type_name,
+        value_kind: inspection.kind,
+        preview: inspection.preview,
+        detail: inspection.detail,
+    }
+}
+
+fn unpack_frame_value(raw: &JsonValue) -> (Option<String>, &JsonValue) {
+    let Some(object) = raw.as_object() else {
+        return (None, raw);
+    };
+    if let Some(value) = object.get("value") {
+        (
+            object
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .map(ToString::to_string),
+            value,
+        )
+    } else {
+        (None, raw)
+    }
+}
+
+fn unpack_register_value(raw: &JsonValue) -> (Option<String>, &JsonValue, Option<String>) {
+    let Some(object) = raw.as_object() else {
+        return (None, raw, None);
+    };
+    if let Some(value) = object.get("value") {
+        (
+            object
+                .get("type")
+                .and_then(JsonValue::as_str)
+                .map(ToString::to_string),
+            value,
+            object
+                .get("group")
+                .and_then(JsonValue::as_str)
+                .map(ToString::to_string),
+        )
+    } else {
+        (None, raw, None)
+    }
+}
+
+struct JsonValueInspection {
+    kind: InspectedValueKind,
+    preview: String,
+    detail: String,
+}
+
+fn inspect_json_value(value: &JsonValue) -> JsonValueInspection {
+    let kind = match value {
+        JsonValue::Null => InspectedValueKind::Null,
+        JsonValue::Bool(_) => InspectedValueKind::Bool,
+        JsonValue::Number(_) => InspectedValueKind::Number,
+        JsonValue::String(_) => InspectedValueKind::String,
+        JsonValue::Array(_) | JsonValue::Object(_) => InspectedValueKind::Json,
+    };
+    let detail = match value {
+        JsonValue::String(value) => value.clone(),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        _ => value.to_string(),
+    };
+    JsonValueInspection {
+        kind,
+        preview: truncate_preview(detail.replace('\n', "\\n"), 72),
+        detail,
+    }
+}
+
+fn truncate_preview(mut value: String, limit: usize) -> String {
+    if value.len() > limit {
+        value.truncate(limit);
+        value.push_str("...");
+    }
+    value
 }
 
 struct SourceFileSummaryBuilder {

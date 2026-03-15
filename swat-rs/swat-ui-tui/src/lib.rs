@@ -714,6 +714,36 @@ impl TuiApp {
                     frame.boundary_id.raw()
                 ));
             }
+            Command::FrameLocals { frame_index } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect frame locals".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let locals = self
+                    .runtime
+                    .inspector()
+                    .stack_frame_locals(session_id, frame_index)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("stack frame {} locals", frame_index),
+                    locals.iter().map(format_tui_frame_local).collect(),
+                ));
+            }
+            Command::FrameRegisters { frame_index } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect frame registers".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let registers = self
+                    .runtime
+                    .inspector()
+                    .stack_frame_registers(session_id, frame_index)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("stack frame {} registers", frame_index),
+                    registers.iter().map(format_tui_frame_register).collect(),
+                ));
+            }
             Command::Span { boundary_id } => {
                 self.filter = EventFilter::Boundary(boundary_id);
                 self.selected_event = 0;
@@ -1660,6 +1690,27 @@ fn format_tui_watchpoint_summary(watchpoint: &swat_api::WatchpointSummary) -> St
     )
 }
 
+fn format_tui_frame_local(local: &swat_api::FrameLocal) -> String {
+    format!(
+        "local={} type={} kind={} preview={}",
+        local.name,
+        local.type_name.as_deref().unwrap_or("-"),
+        local.value_kind.label(),
+        local.preview
+    )
+}
+
+fn format_tui_frame_register(register: &swat_api::FrameRegister) -> String {
+    format!(
+        "register={} group={} type={} kind={} preview={}",
+        register.name,
+        register.group.as_deref().unwrap_or("-"),
+        register.type_name.as_deref().unwrap_or("-"),
+        register.value_kind.label(),
+        register.preview
+    )
+}
+
 fn payload_summary(event: &EventEnvelope) -> String {
     match &event.payload {
         swat_core::EventPayload::Empty => "<empty>".to_string(),
@@ -1740,6 +1791,13 @@ mod tests {
             app.messages
                 .iter()
                 .any(|line| line.contains("stack frames="))
+        );
+
+        app.execute_command("stack locals 0").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("stack frame 0 locals"))
         );
     }
 

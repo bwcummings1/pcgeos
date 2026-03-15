@@ -1,6 +1,7 @@
 use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_adapter_python::{PythonAdapter, PythonAdapterSpec};
 use swat_control::TriggerEngine;
@@ -120,6 +121,65 @@ helper(2)
     );
 
     fs::remove_file(script_path).unwrap();
+}
+
+#[test]
+fn script_host_can_query_frame_locals_and_registers() {
+    let code = r#"
+import json
+import sys
+import time
+
+PREFIX = "__SWATAGENT__"
+
+def emit(record):
+    sys.stdout.write(PREFIX + json.dumps(record) + "\n")
+    sys.stdout.flush()
+
+emit({"kind": "tool", "phase": "start", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool started", "file": "/tmp/agent.py", "line": 14, "function": "run", "locals": {"query": {"type": "str", "value": "weather"}}, "registers": {"pc": {"group": "trace", "type": "str", "value": "run:14"}}})
+emit({"kind": "tool", "phase": "end", "span_id": "tool-1", "correlation_id": "req-9", "name": "web_search", "summary": "tool completed", "file": "/tmp/agent.py", "line": 18, "function": "run"})
+time.sleep(0.1)
+"#;
+
+    let mut manager = SessionManager::new();
+    let mut store = InMemoryStore::new();
+    let mut adapter =
+        AgentRuntimeAdapter::new(AgentRuntimeSpec::new("python3").with_args(["-u", "-c", code]));
+
+    let attach = manager.attach(&mut adapter, &mut store).unwrap();
+    let session_id = attach.session.session_id;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        manager.pump(session_id, &mut adapter, &mut store).unwrap();
+        if store.events_for_session(session_id).iter().any(|event| {
+            matches!(
+                &event.payload,
+                swat_core::EventPayload::Text { summary }
+                    if summary.contains("agent runtime exited")
+            )
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let mut host = ScriptHost::new(&store, session_id);
+    assert_eq!(host.eval_i64("ctx.stack_frame_count()").unwrap(), 1);
+    assert_eq!(host.eval_i64("ctx.stack_frame_local_count(0)").unwrap(), 1);
+    assert_eq!(
+        host.eval_string("ctx.stack_frame_local_name(0, 0)")
+            .unwrap(),
+        "query"
+    );
+    assert_eq!(
+        host.eval_i64("ctx.stack_frame_register_count(0)").unwrap(),
+        1
+    );
+    assert_eq!(
+        host.eval_string("ctx.stack_frame_register_name(0, 0)")
+            .unwrap(),
+        "pc"
+    );
 }
 
 #[test]

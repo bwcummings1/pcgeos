@@ -15,5 +15,6 @@ swat-source = { path = "../swat-source" }
 swat-store = { path = "../swat-store" }
 
 [dev-dependencies]
+swat-adapter-agent = { path = "../swat-adapter-agent" }
 swat-adapter-mock = { path = "../swat-adapter-mock" }
 swat-adapter-python = { path = "../swat-adapter-python" }

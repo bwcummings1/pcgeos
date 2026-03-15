@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use swat_api::{
     BreakpointDefinitionGroup, BreakpointGroupKind, BreakpointPredicateSummary, BreakpointSummary,
-    LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec, WatchpointSummary,
+    FrameLocal, FrameRegister, LiveSessionApi, StackFrame, TraceInspector, WatchpointSpec,
+    WatchpointSummary,
 };
 use swat_control::{
     StopReason, StopReasonKind, Trigger, TriggerAction, TriggerEngine, TriggerMatch,
@@ -166,6 +167,12 @@ pub enum Command {
     Frame {
         frame_index: usize,
     },
+    FrameLocals {
+        frame_index: usize,
+    },
+    FrameRegisters {
+        frame_index: usize,
+    },
     Span {
         boundary_id: BoundaryId,
     },
@@ -302,6 +309,8 @@ impl CommandHost {
             Command::Replay { selector_id } => self.replay(selector_id),
             Command::Spans => self.list_spans(),
             Command::Frame { frame_index } => self.show_frame(frame_index),
+            Command::FrameLocals { frame_index } => self.show_frame_locals(frame_index),
+            Command::FrameRegisters { frame_index } => self.show_frame_registers(frame_index),
             Command::Span { boundary_id } => self.show_span(boundary_id),
             Command::Source {
                 event_id,
@@ -1685,16 +1694,47 @@ impl CommandHost {
     fn show_frame(&self, frame_index: usize) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
         let inspector = self.inspector();
-        let Some(frame) = inspector.stack_frame(session_id, frame_index)? else {
+        let Some(inspection) = inspector.stack_frame_inspection(session_id, frame_index)? else {
             return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
         };
+        let frame = inspection.frame;
         let events = inspector.boundary_span(session_id, frame.boundary_id);
         let mut lines = format_stack_frame_detail(&frame);
+        lines.push(format!("locals={}", inspection.locals.len()));
+        lines.extend(inspection.locals.iter().map(format_frame_local));
+        lines.push(format!("registers={}", inspection.registers.len()));
+        lines.extend(inspection.registers.iter().map(format_frame_register));
         lines.push("events:".to_string());
         lines.extend(events.iter().map(format_event_line));
         Ok(CommandOutput::new(
             format!("stack frame {} {}", frame.frame_index, frame.label),
             lines,
+        ))
+    }
+
+    fn show_frame_locals(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        if inspector.stack_frame(session_id, frame_index)?.is_none() {
+            return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
+        }
+        let locals = inspector.stack_frame_locals(session_id, frame_index)?;
+        Ok(CommandOutput::new(
+            format!("stack frame {} locals", frame_index),
+            locals.iter().map(format_frame_local).collect(),
+        ))
+    }
+
+    fn show_frame_registers(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let inspector = self.inspector();
+        if inspector.stack_frame(session_id, frame_index)?.is_none() {
+            return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
+        }
+        let registers = inspector.stack_frame_registers(session_id, frame_index)?;
+        Ok(CommandOutput::new(
+            format!("stack frame {} registers", frame_index),
+            registers.iter().map(format_frame_register).collect(),
         ))
     }
 
@@ -2089,6 +2129,16 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
     }
     if let Some(rest) = trimmed.strip_prefix("frame ") {
         return Ok(Command::Frame {
+            frame_index: parse_usize(rest.trim(), "frame index")?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("locals ") {
+        return Ok(Command::FrameLocals {
+            frame_index: parse_usize(rest.trim(), "frame index")?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("registers ") {
+        return Ok(Command::FrameRegisters {
             frame_index: parse_usize(rest.trim(), "frame index")?,
         });
     }
@@ -2839,6 +2889,27 @@ fn format_stack_frame_detail(frame: &StackFrame) -> Vec<String> {
         short_stack_frame_source(frame).unwrap_or_else(|| "-".to_string())
     ));
     lines
+}
+
+fn format_frame_local(local: &FrameLocal) -> String {
+    format!(
+        "local={} type={} kind={} preview={}",
+        local.name,
+        local.type_name.as_deref().unwrap_or("-"),
+        local.value_kind.label(),
+        local.preview
+    )
+}
+
+fn format_frame_register(register: &FrameRegister) -> String {
+    format!(
+        "register={} group={} type={} kind={} preview={}",
+        register.name,
+        register.group.as_deref().unwrap_or("-"),
+        register.type_name.as_deref().unwrap_or("-"),
+        register.value_kind.label(),
+        register.preview
+    )
 }
 
 fn short_stack_frame_source(frame: &StackFrame) -> Option<String> {

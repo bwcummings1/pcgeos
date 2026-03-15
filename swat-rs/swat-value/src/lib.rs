@@ -43,6 +43,13 @@ pub enum QueriedValue {
 }
 
 impl DecodedValue {
+    pub fn as_json(&self) -> Option<&JsonValue> {
+        match &self.data {
+            DecodedValueData::Json(value) => Some(value),
+            _ => None,
+        }
+    }
+
     pub fn preview(&self, limit: usize) -> String {
         truncate(self.render_compact(), limit)
     }
