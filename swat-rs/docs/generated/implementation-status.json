@@ -4,8 +4,8 @@
   "queueHeading": "## Current Cycle Queue (T-001..T-021)",
   "summary": {
     "total": 21,
-    "done": 8,
-    "pending": 13,
+    "done": 9,
+    "pending": 12,
     "blocked": 0
   },
   "tasks": [
@@ -83,12 +83,12 @@
     },
     {
       "task": "T-009",
-      "status": "pending",
+      "status": "done",
       "milestone": "M2",
       "description": "Add watchpoints for values, objects, resources, and lifecycle-aware load/time break conditions.",
-      "branch": "-",
-      "commit": "-",
-      "notes": "Use the legacy breakpoint Tcl/C stack as reference, not as implementation."
+      "branch": "swat-rs-full-completion-plan",
+      "commit": "89d654ae",
+      "notes": "`swat-control` now supports value-change watchpoints plus elapsed-time and lifecycle-gated load predicates over shared value observations, with ADR 0029 documenting the stateful model."
     },
     {
       "task": "T-010",
