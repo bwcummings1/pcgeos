@@ -1,0 +1,8 @@
+[package]
+name = "swat-format-pcgeos"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+swat-core = { path = "../swat-core" }

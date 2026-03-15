@@ -879,6 +879,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "swat-format-pcgeos"
+version = "0.1.0"
+dependencies = [
+ "swat-core",
+]
+
+[[package]]
 name = "swat-protocol"
 version = "0.1.0"
 dependencies = [

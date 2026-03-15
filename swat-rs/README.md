@@ -108,6 +108,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0033-debugger-native-query-value-and-source-traversals.md`
 - `docs/adrs/0034-package-oriented-script-libraries.md`
 - `docs/adrs/0035-legacy-helper-command-families.md`
+- `docs/adrs/0036-pcgeos-format-support-crate.md`
 
 ## Phase 1 status
 
@@ -207,6 +208,16 @@ This crate extracts file/line/function locations from structured runtime
 artifacts, resolves them to surrounding source snippets, and now surfaces
 diagnostic failure reports for synthetic or missing source paths. `swat-api`
 now exposes both the snippet lookup path and the richer inspection report.
+
+The first repository-format support crate for later PC/GEOS target work is also
+now in the workspace:
+
+- `swat-format-pcgeos`
+
+This crate parses real PC/GEOS file headers, VM containers, block tables,
+string tables, and object/symbol metadata from repository artifacts while
+keeping those format details out of `swat-core`. It also includes fixture-backed
+tests against checked-in PC/GEOS VM and GEOS data files from this tree.
 
 The first script host is also now in the workspace:
 

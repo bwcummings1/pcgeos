@@ -12,6 +12,7 @@ members = [
     "swat-agent-protocol",
     "swat-adapter-agent",
     "swat-control",
+    "swat-format-pcgeos",
     "swat-value",
     "swat-api",
     "swat-command",

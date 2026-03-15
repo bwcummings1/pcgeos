@@ -100,9 +100,11 @@
 
 ## Post-v1 full-completion targets
 
-- optional `swat-format-pcgeos`
-  Support crate or crates for PC/GEOS VM, symbol, geode, and related object
-  formats if that keeps `swat-adapter-pcgeos` and shared APIs clean.
+- `swat-format-pcgeos`
+  Support crate for PC/GEOS file headers, VM containers, string tables,
+  symbol/object metadata, and source/resource mappings. It keeps legacy
+  repository-format parsing out of `swat-core` while giving the future
+  `swat-adapter-pcgeos` and shared operator layers a reusable substrate.
 
 - expanded `swat-command` and `swat-script`
   The likely landing zone for the missing debugger command ecology, command
