@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::CommandOutput;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,6 +417,116 @@ pub fn command_help(topic: Option<&str>, surface: CommandSurface) -> CommandOutp
     CommandOutput::new(format!("help {}", family.topic), lines)
 }
 
+pub fn command_search(needle: &str, surface: CommandSurface) -> CommandOutput {
+    let normalized = needle.trim();
+    if normalized.is_empty() {
+        return CommandOutput::new(
+            "help search requires a pattern",
+            vec!["usage: help search <needle>".to_string()],
+        );
+    }
+
+    let needle = normalized.to_ascii_lowercase();
+    let mut lines = Vec::new();
+
+    for family in FAMILIES {
+        let aliases = family.aliases.join(",");
+        if family.topic.to_ascii_lowercase().contains(&needle)
+            || family
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase().contains(&needle))
+            || family.summary.to_ascii_lowercase().contains(&needle)
+            || family
+                .examples
+                .iter()
+                .any(|example| example.to_ascii_lowercase().contains(&needle))
+        {
+            lines.push(format!(
+                "topic={} aliases={} summary={}",
+                family.topic, aliases, family.summary
+            ));
+        }
+    }
+
+    for command in COMMANDS {
+        let aliases = command.aliases.join(",");
+        if command.synopsis.to_ascii_lowercase().contains(&needle)
+            || command.summary.to_ascii_lowercase().contains(&needle)
+            || command
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase().contains(&needle))
+        {
+            lines.push(format!(
+                "command={} aliases={} summary={}",
+                format_synopsis(command, surface),
+                aliases,
+                command.summary
+            ));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push("no command topics matched".to_string());
+    }
+
+    CommandOutput::new(format!("help search {normalized}"), lines)
+}
+
+pub fn command_completions(prefix: &str, surface: CommandSurface) -> Vec<String> {
+    let normalized = prefix.trim();
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let mut completions = BTreeSet::new();
+
+    if normalized.is_empty() || "help".starts_with(&normalized_lower) {
+        completions.insert("help".to_string());
+    }
+
+    for family in FAMILIES {
+        let help_topic = format!("help {}", family.topic);
+        if normalized.is_empty()
+            || help_topic
+                .to_ascii_lowercase()
+                .starts_with(&normalized_lower)
+        {
+            completions.insert(help_topic);
+        }
+        for alias in family.aliases {
+            let help_alias = format!("help {alias}");
+            if normalized.is_empty()
+                || help_alias
+                    .to_ascii_lowercase()
+                    .starts_with(&normalized_lower)
+            {
+                completions.insert(help_alias);
+            }
+        }
+    }
+
+    for command in COMMANDS {
+        if !command_available_for_completion(command, surface) {
+            continue;
+        }
+
+        if normalized.is_empty()
+            || command
+                .synopsis
+                .to_ascii_lowercase()
+                .starts_with(&normalized_lower)
+        {
+            completions.insert(command.synopsis.to_string());
+        }
+        for alias in command.aliases {
+            if normalized.is_empty() || alias.to_ascii_lowercase().starts_with(&normalized_lower) {
+                completions.insert((*alias).to_string());
+            }
+        }
+    }
+
+    completions.into_iter().collect()
+}
+
 fn overview_lines(surface: CommandSurface) -> Vec<String> {
     let mut lines = FAMILIES
         .iter()
@@ -430,6 +542,7 @@ fn overview_lines(surface: CommandSurface) -> Vec<String> {
         })
         .collect::<Vec<_>>();
     lines.push("examples: help query | help stack | help source | help breakpoint".to_string());
+    lines.push("search: help search <needle>".to_string());
     if matches!(surface, CommandSurface::Tui) {
         lines.push("Commands marked [shell] are discoverable in the TUI help surface but execute from the shell today.".to_string());
     }
@@ -466,4 +579,8 @@ fn format_synopsis(command: &CommandDescriptor, surface: CommandSurface) -> Stri
     } else {
         command.synopsis.to_string()
     }
+}
+
+fn command_available_for_completion(command: &CommandDescriptor, surface: CommandSurface) -> bool {
+    matches!(surface, CommandSurface::Shell) || command.tui_supported
 }

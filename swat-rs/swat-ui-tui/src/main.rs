@@ -117,8 +117,9 @@ modes:
 
 tui:
   interactive keys: q quit, : command, a attach, u pump, r resume, p pause, s step
+  command mode supports tab completion and in-session up/down history
   command entry supports: help, attach, pump, pause, resume, step, snapshot,
-    events [kind], query <expr>, correlation <id>, span <boundary_id>,
+    help search <needle>, events [kind], query <expr>, correlation <id>, span <boundary_id>,
     event <event_id>, clear
   --headless renders one non-interactive dashboard snapshot for demos/tests"
 }

@@ -20,7 +20,9 @@ use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
 use swat_api::{LiveSessionApi, StackFrame, TraceInspector};
-use swat_command::{Command, CommandSurface, command_help, parse_command};
+use swat_command::{
+    Command, CommandSurface, command_completions, command_help, command_search, parse_command,
+};
 use swat_control::TriggerEngine;
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
@@ -193,6 +195,10 @@ pub struct TuiApp {
     selected_event: usize,
     command_mode: bool,
     command_input: String,
+    command_history: VecDeque<String>,
+    command_history_index: Option<usize>,
+    completion_matches: Vec<String>,
+    completion_index: usize,
     manual_source: Option<ManualSourceView>,
     messages: VecDeque<String>,
 }
@@ -208,9 +214,13 @@ impl TuiApp {
             selected_event: 0,
             command_mode: false,
             command_input: String::new(),
+            command_history: VecDeque::new(),
+            command_history_index: None,
+            completion_matches: Vec::new(),
+            completion_index: 0,
             manual_source: None,
             messages: VecDeque::from([
-                "q quit | :help | a attach | u pump | r resume | p pause | s step".to_string(),
+                "q quit | :help | Tab complete | Up/Down history | a attach | u pump | r resume | p pause | s step".to_string(),
             ]),
         })
     }
@@ -250,6 +260,8 @@ impl TuiApp {
             KeyCode::Char(':') => {
                 self.command_mode = true;
                 self.command_input.clear();
+                self.reset_completion_state();
+                self.command_history_index = None;
                 Ok(false)
             }
             KeyCode::Char('a') => {
@@ -565,21 +577,37 @@ impl TuiApp {
             KeyCode::Esc => {
                 self.command_mode = false;
                 self.command_input.clear();
+                self.reset_completion_state();
+                self.command_history_index = None;
             }
             KeyCode::Enter => {
                 let command = std::mem::take(&mut self.command_input);
                 self.command_mode = false;
-                self.execute_command(command.trim())?;
+                let trimmed = command.trim().to_string();
+                self.record_command(&trimmed);
+                self.reset_completion_state();
+                self.command_history_index = None;
+                self.execute_command(&trimmed)?;
             }
             KeyCode::Backspace => {
                 self.command_input.pop();
+                self.reset_completion_state();
+                self.command_history_index = None;
             }
             KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) && ch == 'c' => {
                 self.command_mode = false;
                 self.command_input.clear();
+                self.reset_completion_state();
+                self.command_history_index = None;
             }
-            KeyCode::Char(ch) => self.command_input.push(ch),
-            KeyCode::Tab => self.command_input.push('\t'),
+            KeyCode::Char(ch) => {
+                self.command_input.push(ch);
+                self.reset_completion_state();
+                self.command_history_index = None;
+            }
+            KeyCode::Tab => self.complete_command_input(),
+            KeyCode::Up => self.recall_history(-1),
+            KeyCode::Down => self.recall_history(1),
             _ => {}
         }
         Ok(())
@@ -600,6 +628,7 @@ impl TuiApp {
 
         match parse_command(input)? {
             Command::Help { topic } => self.show_help(topic.as_deref()),
+            Command::HelpSearch { needle } => self.show_help_search(&needle),
             Command::Attach => self.attach()?,
             Command::Session => self.push_message(self.runtime.session_label()),
             Command::Pump => {
@@ -770,6 +799,96 @@ impl TuiApp {
             "... {} more line(s)",
             help.lines.len().saturating_sub(shown)
         ));
+    }
+
+    fn show_help_search(&mut self, needle: &str) {
+        let help = command_search(needle, CommandSurface::Tui);
+        self.messages.clear();
+        self.push_message(help.summary);
+        for line in help.lines.into_iter().take(MAX_MESSAGES.saturating_sub(1)) {
+            self.push_message(line);
+        }
+    }
+
+    fn record_command(&mut self, command: &str) {
+        if command.is_empty() {
+            return;
+        }
+        if self
+            .command_history
+            .back()
+            .is_some_and(|last| last.as_str() == command)
+        {
+            return;
+        }
+        self.command_history.push_back(command.to_string());
+        while self.command_history.len() > 64 {
+            self.command_history.pop_front();
+        }
+    }
+
+    fn recall_history(&mut self, step: isize) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        let len = self.command_history.len() as isize;
+        let next = match (self.command_history_index, step) {
+            (None, -1) => len - 1,
+            (None, _) => return,
+            (Some(index), -1) => (index as isize - 1).max(0),
+            (Some(index), 1) => {
+                if index + 1 >= self.command_history.len() {
+                    self.command_history_index = None;
+                    self.command_input.clear();
+                    self.reset_completion_state();
+                    return;
+                }
+                index as isize + 1
+            }
+            (Some(index), _) => index as isize,
+        };
+
+        self.command_history_index = Some(next as usize);
+        self.command_input = self.command_history[next as usize].clone();
+        self.reset_completion_state();
+    }
+
+    fn complete_command_input(&mut self) {
+        let reusing_matches = self
+            .completion_matches
+            .iter()
+            .any(|candidate| candidate == &self.command_input);
+        if !reusing_matches {
+            let seed = self.command_input.clone();
+            let matches = command_completions(&seed, CommandSurface::Tui);
+            if matches.is_empty() {
+                self.push_message("no tui command completions".to_string());
+                self.reset_completion_state();
+                return;
+            }
+            self.completion_matches = matches;
+            self.completion_index = 0;
+        } else if !self.completion_matches.is_empty() {
+            self.completion_index = (self.completion_index + 1) % self.completion_matches.len();
+        }
+
+        if let Some(candidate) = self.completion_matches.get(self.completion_index).cloned() {
+            self.command_input = candidate.clone();
+            if self.completion_matches.len() > 1 {
+                self.push_message(format!(
+                    "completion {}/{}: {}",
+                    self.completion_index + 1,
+                    self.completion_matches.len(),
+                    candidate
+                ));
+            }
+        }
+    }
+
+    fn reset_completion_state(&mut self) {
+        self.completion_matches.clear();
+        self.completion_index = 0;
     }
 
     fn stack_lines(&self) -> SwatResult<Vec<String>> {
@@ -1067,5 +1186,36 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("def beta")));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tui_command_entry_supports_completion_and_history_navigation() {
+        let mut app = TuiApp::new(&TuiConfig::new(Mode::Mock)).unwrap();
+
+        app.command_mode = true;
+        app.command_input = "help br".to_string();
+        app.handle_command_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.command_input, "help breakpoint");
+
+        app.handle_command_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        app.command_mode = true;
+        app.command_input = "help source".to_string();
+        app.handle_command_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        app.command_mode = true;
+        app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.command_input, "help source");
+
+        app.handle_command_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.command_input, "help breakpoint");
+
+        app.handle_command_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.command_input, "help source");
     }
 }

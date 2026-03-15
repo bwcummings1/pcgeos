@@ -21,12 +21,15 @@ use swat_script::ScriptHost;
 use swat_session::SessionManager;
 use swat_store::SwatStore;
 
-pub use registry::{CommandSurface, command_help};
+pub use registry::{CommandSurface, command_completions, command_help, command_search};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Help {
         topic: Option<String>,
+    },
+    HelpSearch {
+        needle: String,
     },
     Attach,
     Session,
@@ -174,6 +177,7 @@ impl CommandHost {
     pub fn execute_command(&mut self, command: Command) -> SwatResult<CommandOutput> {
         match command {
             Command::Help { topic } => Ok(command_help(topic.as_deref(), CommandSurface::Shell)),
+            Command::HelpSearch { needle } => Ok(command_search(&needle, CommandSurface::Shell)),
             Command::Attach => self.attach_or_describe(),
             Command::Session => self.describe_session(),
             Command::Pump => self.pump_once(),
@@ -1359,6 +1363,18 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(SwatError::new("command is empty"));
+    }
+    if trimmed == "help search" {
+        return Err(SwatError::new("help search requires a non-empty pattern"));
+    }
+    if let Some(rest) = trimmed.strip_prefix("help search ") {
+        let needle = rest.trim();
+        if needle.is_empty() {
+            return Err(SwatError::new("help search requires a non-empty pattern"));
+        }
+        return Ok(Command::HelpSearch {
+            needle: needle.to_string(),
+        });
     }
     if trimmed == "help" {
         return Ok(Command::Help { topic: None });

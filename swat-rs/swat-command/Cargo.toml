@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+rustyline.workspace = true
 swat-adapter-agent = { path = "../swat-adapter-agent" }
 swat-adapter-local = { path = "../swat-adapter-local" }
 swat-adapter-mock = { path = "../swat-adapter-mock" }

@@ -4,7 +4,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_command::{Command, CommandHost, CommandSurface, command_help, parse_command};
+use swat_command::{
+    Command, CommandHost, CommandSurface, command_completions, command_help, command_search,
+    parse_command,
+};
 use swat_store::InMemoryStore;
 
 #[test]
@@ -77,8 +80,40 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("source file <path>"))
     );
+    assert!(
+        command_help(None, CommandSurface::Shell)
+            .lines
+            .iter()
+            .any(|line| line.contains("help search <needle>"))
+    );
+
+    let search = command_search("break", CommandSurface::Tui);
+    assert!(search.summary.contains("help search break"));
+    assert!(
+        search
+            .lines
+            .iter()
+            .any(|line| line.contains("topic=breakpoint"))
+    );
+    assert!(
+        search
+            .lines
+            .iter()
+            .any(|line| line.contains("breakpoint list [shell]"))
+    );
+
+    let completions = command_completions("help br", CommandSurface::Shell);
+    assert!(completions.contains(&"help breakpoint".to_string()));
+    let tui_completions = command_completions("sou", CommandSurface::Tui);
+    assert!(tui_completions.contains(&"source show <event_id> [before] [after]".to_string()));
 
     assert_eq!(parse_command("stack").unwrap(), Command::Spans);
+    assert_eq!(
+        parse_command("help search break").unwrap(),
+        Command::HelpSearch {
+            needle: "break".to_string(),
+        }
+    );
     assert_eq!(
         parse_command("stack frame 0").unwrap(),
         Command::Frame { frame_index: 0 }

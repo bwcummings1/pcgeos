@@ -4,10 +4,17 @@ use std::env;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::time::Duration;
 
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use swat_adapter_agent::{AgentRuntimeAdapter, AgentRuntimeSpec};
 use swat_adapter_local::{LocalProcessAdapter, LocalProcessSpec};
 use swat_adapter_mock::MockAdapter;
-use swat_command::CommandHost;
+use swat_command::{CommandHost, CommandSurface, command_completions};
 use swat_core::{SwatError, SwatResult, TargetAdapter};
 use swat_store::{FileStore, InMemoryStore, SwatStore};
 
@@ -27,11 +34,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if interactive {
-        eprintln!("swat-command shell; type 'help' for commands, 'quit' to exit");
+        run_interactive_shell(host)?;
+    } else {
+        run_scripted_shell(host)?;
     }
 
+    Ok(())
+}
+
+#[derive(Default)]
+struct ShellHelper;
+
+impl Helper for ShellHelper {}
+impl Highlighter for ShellHelper {}
+impl Validator for ShellHelper {}
+
+impl Hinter for ShellHelper {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        let prefix = &line[..pos];
+        command_completions(prefix, CommandSurface::Shell)
+            .into_iter()
+            .find(|candidate| candidate.starts_with(prefix) && candidate != prefix)
+            .map(|candidate| candidate[prefix.len()..].to_string())
+    }
+}
+
+impl Completer for ShellHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let prefix = &line[..pos];
+        let pairs = command_completions(prefix, CommandSurface::Shell)
+            .into_iter()
+            .map(|candidate| Pair {
+                display: candidate.clone(),
+                replacement: candidate,
+            })
+            .collect::<Vec<_>>();
+        Ok((0, pairs))
+    }
+}
+
+fn run_interactive_shell(mut host: CommandHost) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!(
+        "swat-command shell; type 'help' for commands, tab completes, arrow keys browse history, 'quit' to exit"
+    );
+
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .history_ignore_space(true)
+        .build();
+    let mut editor = Editor::<ShellHelper, DefaultHistory>::with_config(config)?;
+    editor.set_helper(Some(ShellHelper));
+
+    loop {
+        match editor.readline("swat> ") {
+            Ok(line) => {
+                let command = line.trim();
+                if command.is_empty() {
+                    continue;
+                }
+                if matches!(command, "quit" | "exit") {
+                    break;
+                }
+                editor.add_history_entry(command)?;
+                execute_shell_command(&mut host, command, false)?;
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(error) => return Err(Box::new(error)),
+        }
+    }
+
+    Ok(())
+}
+
+fn run_scripted_shell(mut host: CommandHost) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
-    let mut stdout = io::stdout();
     for line in stdin.lock().lines() {
         let line = line?;
         let command = line.trim();
@@ -41,32 +127,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if matches!(command, "quit" | "exit") {
             break;
         }
-        if let Some(rest) = command.strip_prefix("sleep ") {
-            let millis = rest.parse::<u64>().map_err(|err| {
-                SwatError::new(format!("invalid sleep duration '{}': {err}", rest.trim()))
-            })?;
-            std::thread::sleep(Duration::from_millis(millis));
-            writeln!(stdout, "slept {millis}ms")?;
-            stdout.flush()?;
-            continue;
-        }
-        if interactive {
-            writeln!(stdout, "$ {command}")?;
-        }
-        match host.execute(command) {
-            Ok(output) => {
-                writeln!(stdout, "{}", output.summary)?;
-                for line in output.lines {
-                    writeln!(stdout, "  {line}")?;
-                }
-            }
-            Err(error) => {
-                writeln!(stdout, "error: {error}")?;
-            }
-        }
+        execute_shell_command(&mut host, command, false)?;
+    }
+    Ok(())
+}
+
+fn execute_shell_command(
+    host: &mut CommandHost,
+    command: &str,
+    echo_command: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdout = io::stdout();
+    if let Some(rest) = command.strip_prefix("sleep ") {
+        let millis = rest.parse::<u64>().map_err(|err| {
+            SwatError::new(format!("invalid sleep duration '{}': {err}", rest.trim()))
+        })?;
+        std::thread::sleep(Duration::from_millis(millis));
+        writeln!(stdout, "slept {millis}ms")?;
         stdout.flush()?;
+        return Ok(());
     }
 
+    if echo_command {
+        writeln!(stdout, "$ {command}")?;
+    }
+
+    match host.execute(command) {
+        Ok(output) => {
+            writeln!(stdout, "{}", output.summary)?;
+            for line in output.lines {
+                writeln!(stdout, "  {line}")?;
+            }
+        }
+        Err(error) => {
+            writeln!(stdout, "error: {error}")?;
+        }
+    }
+    stdout.flush()?;
     Ok(())
 }
 
@@ -204,8 +301,9 @@ modes:
 
 shell:
   commands are read from stdin
+  interactive terminals support tab completion and in-session history
   shell meta-commands: sleep <ms>, quit, exit
   --triggers preloads a saved trigger file at startup
-  use 'help' for debugger commands
+  use 'help' or 'help search <needle>' for debugger commands
   use 'quit' or 'exit' to leave the shell"
 }
