@@ -16,6 +16,7 @@ swat-control = { path = "../swat-control" }
 swat-core = { path = "../swat-core" }
 swat-expr = { path = "../swat-expr" }
 swat-session = { path = "../swat-session" }
+swat-source = { path = "../swat-source" }
 swat-store = { path = "../swat-store" }
 swat-value = { path = "../swat-value" }
 

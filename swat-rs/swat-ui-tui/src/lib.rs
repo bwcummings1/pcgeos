@@ -27,17 +27,23 @@ use swat_command::{
     BreakpointConditionInput, Command, CommandOutput, CommandSurface, command_completions,
     command_help, command_search, parse_command,
 };
-use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate};
+use swat_control::{Trigger, TriggerAction, TriggerEngine, TriggerPredicate, pump_with_triggers};
 use swat_core::{
     BoundaryId, ControlAction, EventEnvelope, EventId, EventKind, SessionId, SwatError, SwatResult,
     TargetAdapter,
 };
 use swat_expr::parse_expression;
 use swat_session::SessionManager;
+use swat_source::SourceSnippet;
 use swat_store::{FileStore, InMemoryStore, SwatStore};
 
 const TICK_RATE: Duration = Duration::from_millis(100);
 const MAX_MESSAGES: usize = 8;
+const LEGACY_SLIST_BEFORE: usize = 4;
+const LEGACY_SLIST_AFTER: usize = 5;
+const LEGACY_VIEW_BEFORE: usize = 10;
+const LEGACY_VIEW_AFTER: usize = 14;
+const UNTIL_POLL_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -212,12 +218,14 @@ pub struct TuiApp {
     runtime: LiveRuntime,
     filter: EventFilter,
     selected_event: usize,
+    selected_frame: usize,
     command_mode: bool,
     command_input: String,
     command_history: VecDeque<String>,
     command_history_index: Option<usize>,
     completion_matches: Vec<String>,
     completion_index: usize,
+    default_patient: Option<String>,
     manual_source: Option<ManualSourceView>,
     messages: VecDeque<String>,
 }
@@ -231,12 +239,14 @@ impl TuiApp {
             ),
             filter: EventFilter::All,
             selected_event: 0,
+            selected_frame: 0,
             command_mode: false,
             command_input: String::new(),
             command_history: VecDeque::new(),
             command_history_index: None,
             completion_matches: Vec::new(),
             completion_index: 0,
+            default_patient: None,
             manual_source: None,
             messages: VecDeque::from([
                 "q quit | :help | Tab complete | Up/Down history | a attach | u pump | r resume | p pause | s step".to_string(),
@@ -870,10 +880,43 @@ impl TuiApp {
                     format_tui_observed_value_detail(&detail),
                 ));
             }
+            Command::Backtrace { limit } => {
+                let lines = self.stack_lines(limit)?;
+                self.show_command_output(CommandOutput::new("backtrace", lines));
+            }
+            Command::Where => {
+                let output = self.where_output()?;
+                self.show_command_output(output);
+            }
+            Command::Function { name } => {
+                self.select_function(name.as_deref())?;
+            }
+            Command::Up { count } => {
+                self.move_frame_cursor(count, true)?;
+            }
+            Command::Down { count } => {
+                self.move_frame_cursor(count, false)?;
+            }
+            Command::Locals { frame_index } => {
+                let frame_index = frame_index.unwrap_or(self.current_frame_index()?);
+                self.selected_frame = frame_index;
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect frame locals".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let locals = self
+                    .runtime
+                    .inspector()
+                    .stack_frame_locals(session_id, frame_index)?;
+                self.show_command_output(CommandOutput::new(
+                    format!("stack frame {} locals", frame_index),
+                    locals.iter().map(format_tui_frame_local).collect(),
+                ));
+            }
             Command::Spans => {
-                for line in self.stack_lines()? {
-                    self.push_message(line);
-                }
+                let lines = self.stack_lines(None)?;
+                self.show_command_output(CommandOutput::new("stack", lines));
             }
             Command::Frame { frame_index } => {
                 let Some(session_id) = self.runtime.session_id() else {
@@ -888,6 +931,7 @@ impl TuiApp {
                 else {
                     return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
                 };
+                self.selected_frame = frame_index;
                 self.filter = EventFilter::Boundary(frame.boundary_id);
                 self.selected_event = 0;
                 self.manual_source = None;
@@ -903,6 +947,7 @@ impl TuiApp {
                     self.clamp_selection()?;
                     return Ok(());
                 };
+                self.selected_frame = frame_index;
                 let locals = self
                     .runtime
                     .inspector()
@@ -918,6 +963,7 @@ impl TuiApp {
                     self.clamp_selection()?;
                     return Ok(());
                 };
+                self.selected_frame = frame_index;
                 let registers = self
                     .runtime
                     .inspector()
@@ -1027,6 +1073,96 @@ impl TuiApp {
                 }));
                 self.manual_source = Some(ManualSourceView { lines });
                 self.push_message(format!("source view {}:{}", file, line));
+            }
+            Command::SourceList { file, line } => {
+                let output = self.legacy_source_output(
+                    file.as_deref(),
+                    line,
+                    LEGACY_SLIST_BEFORE,
+                    LEGACY_SLIST_AFTER,
+                )?;
+                self.show_command_output(output);
+            }
+            Command::View { file, line } => {
+                let output = self.legacy_source_output(
+                    file.as_deref(),
+                    line,
+                    LEGACY_VIEW_BEFORE,
+                    LEGACY_VIEW_AFTER,
+                )?;
+                self.show_command_output(output);
+            }
+            Command::PatientDefault { patient } => match patient.as_deref() {
+                None | Some("") => self.push_message(format!(
+                    "patient-default={}",
+                    self.default_patient.as_deref().unwrap_or("-")
+                )),
+                Some("off") => {
+                    self.default_patient = None;
+                    self.push_message("patient-default=-".to_string());
+                }
+                Some(patient) => {
+                    self.default_patient = Some(patient.to_string());
+                    self.push_message(format!("patient-default={patient}"));
+                }
+            },
+            Command::Spawn { patient, function } => {
+                let patient = self.resolve_default_patient(patient.as_deref())?;
+                let mut expr = format!(r#"patient == "{}""#, escape_query_string(&patient));
+                if let Some(function) = function.as_deref() {
+                    expr.push_str(&format!(
+                        r#" and source.function == "{}""#,
+                        escape_query_string(function)
+                    ));
+                }
+                self.run_until_expr(&format!("spawn {patient}"), &expr)?;
+            }
+            Command::Wakeup { patient } => {
+                let patient = self.resolve_default_patient(patient.as_deref())?;
+                let expr = format!(r#"patient == "{}""#, escape_query_string(&patient));
+                self.run_until_expr(&format!("wakeup {patient}"), &expr)?;
+            }
+            Command::ObjectName { object } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect objects".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .object_detail(session_id, &object)?
+                    .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("obj-name {}", detail.object.key),
+                    vec![format!(
+                        "{} class={} patient={} handle={} resource={}",
+                        detail.object.key,
+                        detail.object.class_name.as_deref().unwrap_or("-"),
+                        detail.object.patient.as_deref().unwrap_or("-"),
+                        detail.object.handle.as_deref().unwrap_or("-"),
+                        detail.object.resource.as_deref().unwrap_or("-")
+                    )],
+                ));
+            }
+            Command::ObjectClass { object } => {
+                let Some(session_id) = self.runtime.session_id() else {
+                    self.push_message("attach a target to inspect objects".to_string());
+                    self.clamp_selection()?;
+                    return Ok(());
+                };
+                let detail = self
+                    .runtime
+                    .inspector()
+                    .object_detail(session_id, &object)?
+                    .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+                self.show_command_output(CommandOutput::new(
+                    format!("obj-class {}", detail.object.key),
+                    vec![format!(
+                        "class={}",
+                        detail.object.class_name.as_deref().unwrap_or("-")
+                    )],
+                ));
             }
             Command::Breakpoints => {
                 let output = self.list_breakpoints_output()?;
@@ -1667,21 +1803,278 @@ impl TuiApp {
         self.completion_index = 0;
     }
 
-    fn stack_lines(&self) -> SwatResult<Vec<String>> {
+    fn current_frame_index(&mut self) -> SwatResult<usize> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Err(SwatError::new("attach a target to inspect stack frames"));
+        };
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        if frames.is_empty() {
+            self.selected_frame = 0;
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        if self.selected_frame >= frames.len() {
+            self.selected_frame = frames.len() - 1;
+        }
+        Ok(self.selected_frame)
+    }
+
+    fn stack_lines(&mut self, limit: Option<usize>) -> SwatResult<Vec<String>> {
         let Some(session_id) = self.runtime.session_id() else {
             return Ok(vec![
                 "attach a target to inspect the stack view".to_string(),
             ]);
         };
         let frames = self.runtime.inspector().stack_frames(session_id)?;
+        if frames.is_empty() {
+            self.selected_frame = 0;
+        } else if self.selected_frame >= frames.len() {
+            self.selected_frame = frames.len() - 1;
+        }
         let mut lines = vec![format!("stack frames={}", frames.len())];
-        lines.extend(
-            frames
-                .into_iter()
-                .take(6)
-                .map(|frame| format_stack_frame_line(&frame)),
-        );
+        lines.extend(frames.into_iter().take(limit.unwrap_or(6)).map(|frame| {
+            let marker = if frame.frame_index == self.selected_frame {
+                '*'
+            } else {
+                ' '
+            };
+            format!("{marker} {}", format_stack_frame_line(&frame))
+        }));
         Ok(lines)
+    }
+
+    fn where_output(&mut self) -> SwatResult<CommandOutput> {
+        let Some(session_id) = self.runtime.session_id() else {
+            return Err(SwatError::new("attach a target to inspect stack frames"));
+        };
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        let current = self.current_frame_index()?;
+        let frame = frames
+            .iter()
+            .find(|frame| frame.frame_index == current)
+            .cloned()
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?;
+        let mut lines = self.stack_lines(None)?;
+        lines.push("source:".to_string());
+        lines.extend(
+            self.legacy_source_output(None, None, LEGACY_SLIST_BEFORE, LEGACY_SLIST_AFTER)?
+                .lines,
+        );
+        Ok(CommandOutput::new(
+            format!("where frame {} {}", frame.frame_index, frame.label),
+            lines,
+        ))
+    }
+
+    fn select_function(&mut self, name: Option<&str>) -> SwatResult<()> {
+        let Some(session_id) = self.runtime.session_id() else {
+            self.push_message("attach a target to inspect stack frames".to_string());
+            self.clamp_selection()?;
+            return Ok(());
+        };
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let frame = if let Some(name) = name {
+            frames
+                .iter()
+                .find(|frame| {
+                    frame
+                        .function
+                        .as_deref()
+                        .map(|function| function == name)
+                        .unwrap_or(false)
+                        || frame.label.contains(name)
+                })
+                .cloned()
+                .ok_or_else(|| SwatError::new(format!("function {name} is not active")))?
+        } else {
+            let current = self.current_frame_index()?;
+            frames
+                .iter()
+                .find(|frame| frame.frame_index == current)
+                .cloned()
+                .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?
+        };
+        self.execute_command(&format!("stack frame {}", frame.frame_index))
+    }
+
+    fn move_frame_cursor(&mut self, count: usize, up: bool) -> SwatResult<()> {
+        let Some(session_id) = self.runtime.session_id() else {
+            self.push_message("attach a target to inspect stack frames".to_string());
+            self.clamp_selection()?;
+            return Ok(());
+        };
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let current = self.current_frame_index()?;
+        let target = if up {
+            current.saturating_add(count).min(frames.len() - 1)
+        } else {
+            current.saturating_sub(count)
+        };
+        self.execute_command(&format!("stack frame {target}"))
+    }
+
+    fn legacy_source_output(
+        &mut self,
+        file: Option<&str>,
+        line: Option<usize>,
+        before: usize,
+        after: usize,
+    ) -> SwatResult<CommandOutput> {
+        if let Some(file) = file {
+            if let Ok(snippet) =
+                self.runtime
+                    .inspector()
+                    .source_file_view(file, line.unwrap_or(1), before, after)
+            {
+                return Ok(CommandOutput::new(
+                    format!("source {}:{}", snippet.location.file, snippet.location.line),
+                    render_tui_source_snippet(&snippet),
+                ));
+            }
+        }
+
+        let Some(session_id) = self.runtime.session_id() else {
+            return Err(SwatError::new("attach a target to inspect source"));
+        };
+        let frames = self.runtime.inspector().stack_frames(session_id)?;
+        let current = self.current_frame_index()?;
+        let frame = frames
+            .iter()
+            .find(|frame| frame.frame_index == current)
+            .cloned()
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?;
+        if let Some(line) = line {
+            let file = frame
+                .source_file
+                .as_deref()
+                .ok_or_else(|| SwatError::new("current frame has no source file"))?;
+            if let Ok(snippet) = self
+                .runtime
+                .inspector()
+                .source_file_view(file, line, before, after)
+            {
+                return Ok(CommandOutput::new(
+                    format!("source {}:{}", snippet.location.file, snippet.location.line),
+                    render_tui_source_snippet(&snippet),
+                ));
+            }
+        }
+        let event = self
+            .runtime
+            .inspector()
+            .event_by_id(frame.last_event_id)
+            .ok_or_else(|| {
+                SwatError::new(format!("unknown event {}", frame.last_event_id.raw()))
+            })?;
+        let inspection = self
+            .runtime
+            .inspector()
+            .source_inspection(&event, before, after)?;
+        if let Some(snippet) = inspection.snippet {
+            return Ok(CommandOutput::new(
+                format!("source {}:{}", snippet.location.file, snippet.location.line),
+                render_tui_source_snippet(&snippet),
+            ));
+        }
+        let mut lines = vec!["source unavailable".to_string()];
+        if let Some(failure) = inspection.failure {
+            lines.push(format!("failure_kind={:?}", failure.kind));
+            lines.push(format!("failure={}", failure.message));
+        }
+        Ok(CommandOutput::new(
+            format!("source frame {}", frame.frame_index),
+            lines,
+        ))
+    }
+
+    fn resolve_default_patient(&self, patient: Option<&str>) -> SwatResult<String> {
+        patient
+            .filter(|patient| !patient.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| self.default_patient.clone())
+            .ok_or_else(|| SwatError::new("no patient specified and no patient-default is set"))
+    }
+
+    fn run_until_expr(&mut self, label: &str, expr: &str) -> SwatResult<()> {
+        let session_id = self.runtime.require_session_id()?;
+        let session =
+            self.runtime.manager.session(session_id).ok_or_else(|| {
+                SwatError::new("active session is missing from the session manager")
+            })?;
+        if !session.capabilities.can_resume {
+            return Err(SwatError::new("active target cannot resume execution"));
+        }
+
+        let trigger = Trigger::new(
+            format!("{label} {expr}"),
+            TriggerPredicate::Expr(parse_expression(expr)?),
+            vec![TriggerAction::PauseTarget],
+        )
+        .fire_once();
+        let trigger_id = trigger.trigger_id;
+
+        let _ = self.runtime.api().add_trigger(session_id, trigger)?;
+        let resume = self
+            .runtime
+            .api()
+            .control(session_id, ControlAction::Resume)?;
+        if !resume.value.response.accepted {
+            let _ = self.runtime.api().remove_trigger(session_id, trigger_id);
+            return Err(SwatError::new(resume.value.response.summary));
+        }
+
+        self.push_message(format!("expr={expr}"));
+        let mut pumps = 0usize;
+        let matched = loop {
+            let report = pump_with_triggers(
+                &mut self.runtime.manager,
+                session_id,
+                self.runtime.adapter.as_mut(),
+                self.runtime.store.as_mut(),
+                &mut self.runtime.trigger_engine,
+            )?;
+            pumps += 1;
+            if report
+                .trigger_matches
+                .iter()
+                .any(|trigger_match| trigger_match.trigger_id == trigger_id)
+            {
+                break true;
+            }
+            if report
+                .pump_report
+                .stored_events
+                .iter()
+                .any(event_looks_like_target_exit)
+            {
+                break false;
+            }
+            if report_paused_target(&report) {
+                let resume = self
+                    .runtime
+                    .api()
+                    .control(session_id, ControlAction::Resume)?;
+                if !resume.value.response.accepted {
+                    let _ = self.runtime.api().remove_trigger(session_id, trigger_id);
+                    return Err(SwatError::new(resume.value.response.summary));
+                }
+            }
+            if report.pump_report.stored_events.is_empty() {
+                std::thread::sleep(UNTIL_POLL_DELAY);
+            }
+        };
+        let _ = self.runtime.api().remove_trigger(session_id, trigger_id);
+        self.push_message(if matched {
+            format!("{label} matched after {pumps} pump(s)")
+        } else {
+            format!("{label} stopped after target exit without a match")
+        });
+        Ok(())
     }
 
     fn select_event(&mut self, event_id: EventId) -> SwatResult<()> {
@@ -1743,6 +2136,56 @@ fn short_stack_source(frame: &StackFrame) -> Option<String> {
         Some(line) => Some(format!("{file}:{line}")),
         None => Some(file.to_string()),
     }
+}
+
+fn render_tui_source_snippet(snippet: &SourceSnippet) -> Vec<String> {
+    let mut lines = vec![
+        format!("file={}", snippet.location.file),
+        format!("line={}", snippet.location.line),
+        format!(
+            "function={}",
+            snippet
+                .location
+                .function
+                .clone()
+                .unwrap_or_else(|| "-".to_string())
+        ),
+    ];
+    lines.extend(snippet.lines.iter().map(|line| {
+        let marker = if line.line_number == snippet.focus_line {
+            '>'
+        } else {
+            ' '
+        };
+        format!("{marker} {:>4} {}", line.line_number, line.text)
+    }));
+    lines
+}
+
+fn escape_query_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn event_looks_like_target_exit(event: &EventEnvelope) -> bool {
+    matches!(
+        &event.payload,
+        swat_core::EventPayload::Text { summary }
+            if event.kind == EventKind::Lifecycle && summary.contains("exited")
+    )
+}
+
+fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
+    report.control_reports.iter().any(|control_report| {
+        control_report.stored_events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                swat_core::EventPayload::Control {
+                    action: ControlAction::Pause,
+                    ..
+                }
+            )
+        })
+    })
 }
 
 #[derive(Default)]
@@ -2248,6 +2691,16 @@ mod tests {
                 .any(|line| line.contains("stack frames="))
         );
 
+        app.execute_command("backtrace 1").unwrap();
+        assert!(app.messages.iter().any(|line| line.contains("frame=0")));
+
+        app.execute_command("locals").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("stack frame 0 locals"))
+        );
+
         app.execute_command("stack locals 0").unwrap();
         assert!(
             app.messages
@@ -2332,6 +2785,11 @@ mod tests {
         let lines = app.source_lines(None).unwrap();
         assert!(lines.iter().any(|line| line.contains("def beta")));
 
+        app.execute_command(&format!("view {} 4", path.display()))
+            .unwrap();
+        let lines = app.source_lines(None).unwrap();
+        assert!(lines.iter().any(|line| line.contains("def beta")));
+
         let _ = fs::remove_file(path);
     }
 
@@ -2377,6 +2835,13 @@ time.sleep(0.1)
         app.execute_command("patient").unwrap();
         assert!(app.messages.iter().any(|line| line.contains("patient=ui")));
 
+        app.execute_command("patient-default ui").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("patient-default=ui"))
+        );
+
         app.execute_command("handle show h:1001").unwrap();
         assert!(
             app.messages
@@ -2385,6 +2850,20 @@ time.sleep(0.1)
         );
 
         app.execute_command("object show ^lui:0002").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("class=GenApplication"))
+        );
+
+        app.execute_command("obj-name ^lui:0002").unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .any(|line| line.contains("GenApplication"))
+        );
+
+        app.execute_command("obj-class ^lui:0002").unwrap();
         assert!(
             app.messages
                 .iter()

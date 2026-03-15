@@ -184,6 +184,22 @@ pub enum Command {
     Replay {
         selector_id: u64,
     },
+    Backtrace {
+        limit: Option<usize>,
+    },
+    Where,
+    Function {
+        name: Option<String>,
+    },
+    Up {
+        count: usize,
+    },
+    Down {
+        count: usize,
+    },
+    Locals {
+        frame_index: Option<usize>,
+    },
     Spans,
     Frame {
         frame_index: usize,
@@ -215,6 +231,30 @@ pub enum Command {
         line: usize,
         before: usize,
         after: usize,
+    },
+    SourceList {
+        file: Option<String>,
+        line: Option<usize>,
+    },
+    View {
+        file: Option<String>,
+        line: Option<usize>,
+    },
+    PatientDefault {
+        patient: Option<String>,
+    },
+    Spawn {
+        patient: Option<String>,
+        function: Option<String>,
+    },
+    Wakeup {
+        patient: Option<String>,
+    },
+    ObjectName {
+        object: String,
+    },
+    ObjectClass {
+        object: String,
     },
     ScriptPackages,
     ScriptPackageLoad {
@@ -251,6 +291,8 @@ pub struct CommandHost {
     trigger_specs: BTreeMap<TriggerId, PersistedTriggerSpec>,
     predicate_specs: BTreeMap<String, PersistedPredicateSpec>,
     script_packages: BTreeSet<String>,
+    current_frame: usize,
+    default_patient: Option<String>,
     session_id: Option<SessionId>,
 }
 
@@ -264,6 +306,8 @@ impl CommandHost {
             trigger_specs: BTreeMap::new(),
             predicate_specs: BTreeMap::new(),
             script_packages: BTreeSet::new(),
+            current_frame: 0,
+            default_patient: None,
             session_id: None,
         }
     }
@@ -351,7 +395,13 @@ impl CommandHost {
             Command::TriggerRemove { trigger_id } => self.remove_trigger(trigger_id),
             Command::Until { expr } => self.until_expr(&expr),
             Command::Replay { selector_id } => self.replay(selector_id),
-            Command::Spans => self.list_spans(),
+            Command::Backtrace { limit } => self.list_spans(limit),
+            Command::Where => self.show_where(),
+            Command::Function { name } => self.show_or_select_function(name.as_deref()),
+            Command::Up { count } => self.move_frame_cursor(count, true),
+            Command::Down { count } => self.move_frame_cursor(count, false),
+            Command::Locals { frame_index } => self.show_legacy_locals(frame_index),
+            Command::Spans => self.list_spans(None),
             Command::Frame { frame_index } => self.show_frame(frame_index),
             Command::FrameLocals { frame_index } => self.show_frame_locals(frame_index),
             Command::FrameRegisters { frame_index } => self.show_frame_registers(frame_index),
@@ -371,6 +421,15 @@ impl CommandHost {
                 before,
                 after,
             } => self.show_source_file_view(&file, line, before, after),
+            Command::SourceList { file, line } => self.legacy_source_list(file.as_deref(), line),
+            Command::View { file, line } => self.legacy_view(file.as_deref(), line),
+            Command::PatientDefault { patient } => self.patient_default(patient.as_deref()),
+            Command::Spawn { patient, function } => {
+                self.spawn_patient(patient.as_deref(), function.as_deref())
+            }
+            Command::Wakeup { patient } => self.wakeup_patient(patient.as_deref()),
+            Command::ObjectName { object } => self.show_object_name(&object),
+            Command::ObjectClass { object } => self.show_object_class(&object),
             Command::ScriptPackages => Ok(self.list_script_packages()),
             Command::ScriptPackageLoad { package } => self.load_script_package(&package),
             Command::ScriptPackageShow { package } => self.show_script_package(&package),
@@ -2020,27 +2079,68 @@ impl CommandHost {
         ))
     }
 
-    fn list_spans(&self) -> SwatResult<CommandOutput> {
+    fn session_stack_frames(&self) -> SwatResult<Vec<StackFrame>> {
         let session_id = self.require_session()?;
-        let inspector = self.inspector();
-        let frames = inspector.stack_frames(session_id)?;
+        self.inspector().stack_frames(session_id)
+    }
+
+    fn current_frame_index(&mut self) -> SwatResult<usize> {
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            self.current_frame = 0;
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        if self.current_frame >= frames.len() {
+            self.current_frame = frames.len() - 1;
+        }
+        Ok(self.current_frame)
+    }
+
+    fn format_stack_listing(&mut self, frames: &[StackFrame], limit: Option<usize>) -> Vec<String> {
+        let current_frame = if frames.is_empty() {
+            self.current_frame = 0;
+            None
+        } else {
+            if self.current_frame >= frames.len() {
+                self.current_frame = frames.len() - 1;
+            }
+            Some(self.current_frame)
+        };
+        frames
+            .iter()
+            .take(limit.unwrap_or(frames.len()))
+            .map(|frame| {
+                let marker = if current_frame == Some(frame.frame_index) {
+                    '*'
+                } else {
+                    ' '
+                };
+                format!("{marker} {}", format_stack_frame_summary(frame))
+            })
+            .collect()
+    }
+
+    fn list_spans(&mut self, limit: Option<usize>) -> SwatResult<CommandOutput> {
+        let frames = self.session_stack_frames()?;
         Ok(CommandOutput::new(
             format!("{} stack frame(s)", frames.len()),
-            frames
-                .into_iter()
-                .map(|frame| format_stack_frame_summary(&frame))
-                .collect(),
+            self.format_stack_listing(&frames, limit),
         ))
     }
 
-    fn show_frame(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+    fn show_frame(&mut self, frame_index: usize) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let inspector = self.inspector();
-        let Some(inspection) = inspector.stack_frame_inspection(session_id, frame_index)? else {
+        let Some(inspection) = self
+            .inspector()
+            .stack_frame_inspection(session_id, frame_index)?
+        else {
             return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
         };
         let frame = inspection.frame;
-        let events = inspector.boundary_span(session_id, frame.boundary_id);
+        let events = self
+            .inspector()
+            .boundary_span(session_id, frame.boundary_id);
+        self.current_frame = frame_index;
         let mut lines = format_stack_frame_detail(&frame);
         lines.push(format!("locals={}", inspection.locals.len()));
         lines.extend(inspection.locals.iter().map(format_frame_local));
@@ -2054,26 +2154,38 @@ impl CommandHost {
         ))
     }
 
-    fn show_frame_locals(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+    fn show_frame_locals(&mut self, frame_index: usize) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let inspector = self.inspector();
-        if inspector.stack_frame(session_id, frame_index)?.is_none() {
+        if self
+            .inspector()
+            .stack_frame(session_id, frame_index)?
+            .is_none()
+        {
             return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
         }
-        let locals = inspector.stack_frame_locals(session_id, frame_index)?;
+        let locals = self
+            .inspector()
+            .stack_frame_locals(session_id, frame_index)?;
+        self.current_frame = frame_index;
         Ok(CommandOutput::new(
             format!("stack frame {} locals", frame_index),
             locals.iter().map(format_frame_local).collect(),
         ))
     }
 
-    fn show_frame_registers(&self, frame_index: usize) -> SwatResult<CommandOutput> {
+    fn show_frame_registers(&mut self, frame_index: usize) -> SwatResult<CommandOutput> {
         let session_id = self.require_session()?;
-        let inspector = self.inspector();
-        if inspector.stack_frame(session_id, frame_index)?.is_none() {
+        if self
+            .inspector()
+            .stack_frame(session_id, frame_index)?
+            .is_none()
+        {
             return Err(SwatError::new(format!("unknown stack frame {frame_index}")));
         }
-        let registers = inspector.stack_frame_registers(session_id, frame_index)?;
+        let registers = self
+            .inspector()
+            .stack_frame_registers(session_id, frame_index)?;
+        self.current_frame = frame_index;
         Ok(CommandOutput::new(
             format!("stack frame {} registers", frame_index),
             registers.iter().map(format_frame_register).collect(),
@@ -2100,6 +2212,307 @@ impl CommandHost {
         Ok(CommandOutput::new(
             format!("stack boundary {} {}", boundary_id.raw(), frame.label),
             lines,
+        ))
+    }
+
+    fn move_frame_cursor(&mut self, count: usize, up: bool) -> SwatResult<CommandOutput> {
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let current = self.current_frame_index()?;
+        let target = if up {
+            current.saturating_add(count).min(frames.len() - 1)
+        } else {
+            current.saturating_sub(count)
+        };
+        self.show_frame(target)
+    }
+
+    fn show_or_select_function(&mut self, name: Option<&str>) -> SwatResult<CommandOutput> {
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+
+        let target = if let Some(name) = name {
+            frames
+                .iter()
+                .find(|frame| {
+                    frame
+                        .function
+                        .as_deref()
+                        .map(|function| function == name)
+                        .unwrap_or(false)
+                        || frame.label.contains(name)
+                })
+                .map(|frame| frame.frame_index)
+                .ok_or_else(|| SwatError::new(format!("function {name} is not active")))?;
+            Some(name.to_string())
+        } else {
+            None
+        };
+
+        let frame_index = target
+            .as_ref()
+            .and_then(|name| {
+                frames
+                    .iter()
+                    .find(|frame| {
+                        frame
+                            .function
+                            .as_deref()
+                            .map(|function| function == name)
+                            .unwrap_or(false)
+                            || frame.label.contains(name)
+                    })
+                    .map(|frame| frame.frame_index)
+            })
+            .unwrap_or(self.current_frame_index()?);
+        let output = self.show_frame(frame_index)?;
+        if target.is_some() {
+            return Ok(output);
+        }
+        let frame = frames
+            .into_iter()
+            .find(|frame| frame.frame_index == frame_index)
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {frame_index}")))?;
+        Ok(CommandOutput::new(
+            format!("func {}", frame.label),
+            vec![
+                format!("frame={}", frame.frame_index),
+                format!(
+                    "function={}",
+                    frame.function.as_deref().unwrap_or(&frame.label)
+                ),
+                format!(
+                    "source={}",
+                    short_stack_frame_source(&frame).unwrap_or_else(|| "-".to_string())
+                ),
+            ],
+        ))
+    }
+
+    fn show_legacy_locals(&mut self, frame_index: Option<usize>) -> SwatResult<CommandOutput> {
+        let frame_index = match frame_index {
+            Some(frame_index) => frame_index,
+            None => self.current_frame_index()?,
+        };
+        self.show_frame_locals(frame_index)
+    }
+
+    fn legacy_source_from_frame(
+        &self,
+        frame: &StackFrame,
+        before: usize,
+        after: usize,
+    ) -> SwatResult<CommandOutput> {
+        if let (Some(file), Some(line)) = (frame.source_file.as_deref(), frame.source_line) {
+            if let Ok(output) = self.show_source_file_view(file, line as usize, before, after) {
+                return Ok(output);
+            }
+        }
+        self.show_source(frame.last_event_id, before, after)
+    }
+
+    fn show_where(&mut self) -> SwatResult<CommandOutput> {
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let current = self.current_frame_index()?;
+        let frame = frames
+            .iter()
+            .find(|frame| frame.frame_index == current)
+            .cloned()
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?;
+        let mut lines = self.format_stack_listing(&frames, None);
+        lines.push("source:".to_string());
+        lines.extend(
+            self.legacy_source_from_frame(&frame, LEGACY_SLIST_BEFORE, LEGACY_SLIST_AFTER)?
+                .lines,
+        );
+        Ok(CommandOutput::new(
+            format!("where frame {} {}", frame.frame_index, frame.label),
+            lines,
+        ))
+    }
+
+    fn legacy_source_list(
+        &mut self,
+        file: Option<&str>,
+        line: Option<usize>,
+    ) -> SwatResult<CommandOutput> {
+        if let Some(file) = file {
+            return self.show_source_file_view(
+                file,
+                line.unwrap_or(1),
+                LEGACY_SLIST_BEFORE,
+                LEGACY_SLIST_AFTER,
+            );
+        }
+
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let current = self.current_frame_index()?;
+        let frame = frames
+            .into_iter()
+            .find(|frame| frame.frame_index == current)
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?;
+        if let Some(line) = line {
+            let file = frame
+                .source_file
+                .as_deref()
+                .ok_or_else(|| SwatError::new("current frame has no source file"))?;
+            return self
+                .show_source_file_view(file, line, LEGACY_SLIST_BEFORE, LEGACY_SLIST_AFTER)
+                .or_else(|_| {
+                    self.show_source(frame.last_event_id, LEGACY_SLIST_BEFORE, LEGACY_SLIST_AFTER)
+                });
+        }
+        self.legacy_source_from_frame(&frame, LEGACY_SLIST_BEFORE, LEGACY_SLIST_AFTER)
+    }
+
+    fn legacy_view(
+        &mut self,
+        file: Option<&str>,
+        line: Option<usize>,
+    ) -> SwatResult<CommandOutput> {
+        if let Some(file) = file {
+            return self.show_source_file_view(
+                file,
+                line.unwrap_or(1),
+                LEGACY_VIEW_BEFORE,
+                LEGACY_VIEW_AFTER,
+            );
+        }
+        let frames = self.session_stack_frames()?;
+        if frames.is_empty() {
+            return Err(SwatError::new("no stack frames are available"));
+        }
+        let current = self.current_frame_index()?;
+        let frame = frames
+            .into_iter()
+            .find(|frame| frame.frame_index == current)
+            .ok_or_else(|| SwatError::new(format!("unknown stack frame {current}")))?;
+        if let Some(line) = line {
+            let file = frame
+                .source_file
+                .as_deref()
+                .ok_or_else(|| SwatError::new("current frame has no source file"))?;
+            return self
+                .show_source_file_view(file, line, LEGACY_VIEW_BEFORE, LEGACY_VIEW_AFTER)
+                .or_else(|_| {
+                    self.show_source(frame.last_event_id, LEGACY_VIEW_BEFORE, LEGACY_VIEW_AFTER)
+                });
+        }
+        self.legacy_source_from_frame(&frame, LEGACY_VIEW_BEFORE, LEGACY_VIEW_AFTER)
+    }
+
+    fn patient_default(&mut self, patient: Option<&str>) -> SwatResult<CommandOutput> {
+        match patient.map(str::trim) {
+            None | Some("") => Ok(CommandOutput::new(
+                "patient-default",
+                vec![format!(
+                    "patient={}",
+                    self.default_patient.as_deref().unwrap_or("-")
+                )],
+            )),
+            Some("off") => {
+                self.default_patient = None;
+                Ok(CommandOutput::new(
+                    "patient-default cleared",
+                    vec!["patient=-".to_string()],
+                ))
+            }
+            Some(patient) => {
+                if let Some(session_id) = self.session_id {
+                    if self
+                        .inspector()
+                        .patient_detail(session_id, patient)?
+                        .is_none()
+                    {
+                        return Err(SwatError::new(format!("unknown patient {patient}")));
+                    }
+                }
+                self.default_patient = Some(patient.to_string());
+                Ok(CommandOutput::new(
+                    format!("patient-default {}", patient),
+                    vec![format!("patient={patient}")],
+                ))
+            }
+        }
+    }
+
+    fn resolve_default_patient(&self, patient: Option<&str>) -> SwatResult<String> {
+        patient
+            .filter(|patient| !patient.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| self.default_patient.clone())
+            .ok_or_else(|| SwatError::new("no patient specified and no patient-default is set"))
+    }
+
+    fn spawn_patient(
+        &mut self,
+        patient: Option<&str>,
+        function: Option<&str>,
+    ) -> SwatResult<CommandOutput> {
+        let patient = self.resolve_default_patient(patient)?;
+        let mut expr = format!(r#"patient == "{}""#, escape_query_string(&patient));
+        if let Some(function) = function {
+            expr.push_str(&format!(
+                r#" and source.function == "{}""#,
+                escape_query_string(function)
+            ));
+        }
+        let mut output = self.until_expr(&expr)?;
+        output.summary = format!("spawn {} {}", patient, output.summary);
+        output.lines.insert(0, format!("expr={expr}"));
+        Ok(output)
+    }
+
+    fn wakeup_patient(&mut self, patient: Option<&str>) -> SwatResult<CommandOutput> {
+        let patient = self.resolve_default_patient(patient)?;
+        let expr = format!(r#"patient == "{}""#, escape_query_string(&patient));
+        let mut output = self.until_expr(&expr)?;
+        output.summary = format!("wakeup {} {}", patient, output.summary);
+        output.lines.insert(0, format!("expr={expr}"));
+        Ok(output)
+    }
+
+    fn show_object_name(&self, object: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .object_detail(session_id, object)?
+            .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+        Ok(CommandOutput::new(
+            format!("obj-name {}", detail.object.key),
+            vec![format!(
+                "{} class={} patient={} handle={} resource={}",
+                detail.object.key,
+                detail.object.class_name.as_deref().unwrap_or("-"),
+                detail.object.patient.as_deref().unwrap_or("-"),
+                detail.object.handle.as_deref().unwrap_or("-"),
+                detail.object.resource.as_deref().unwrap_or("-")
+            )],
+        ))
+    }
+
+    fn show_object_class(&self, object: &str) -> SwatResult<CommandOutput> {
+        let session_id = self.require_session()?;
+        let detail = self
+            .inspector()
+            .object_detail(session_id, object)?
+            .ok_or_else(|| SwatError::new(format!("unknown object {object}")))?;
+        Ok(CommandOutput::new(
+            format!("obj-class {}", detail.object.key),
+            vec![format!(
+                "class={}",
+                detail.object.class_name.as_deref().unwrap_or("-")
+            )],
         ))
     }
 
@@ -2560,6 +2973,60 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
             selector_id: parse_u64(rest.trim(), "snapshot or boundary id")?,
         });
     }
+    if trimmed == "backtrace" || trimmed == "bt" {
+        return Ok(Command::Backtrace { limit: None });
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("backtrace ")
+        .or_else(|| trimmed.strip_prefix("bt "))
+    {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Ok(Command::Backtrace { limit: None });
+        }
+        return Ok(Command::Backtrace {
+            limit: Some(parse_usize(rest, "frame count")?),
+        });
+    }
+    if matches!(trimmed, "where" | "w") {
+        return Ok(Command::Where);
+    }
+    if trimmed == "func" {
+        return Ok(Command::Function { name: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("func ") {
+        let name = rest.trim();
+        if name.is_empty() {
+            return Ok(Command::Function { name: None });
+        }
+        return Ok(Command::Function {
+            name: Some(name.to_string()),
+        });
+    }
+    if trimmed == "up" {
+        return Ok(Command::Up { count: 1 });
+    }
+    if let Some(rest) = trimmed.strip_prefix("up ") {
+        return Ok(Command::Up {
+            count: parse_usize(rest.trim(), "frame count")?,
+        });
+    }
+    if trimmed == "down" {
+        return Ok(Command::Down { count: 1 });
+    }
+    if let Some(rest) = trimmed.strip_prefix("down ") {
+        return Ok(Command::Down {
+            count: parse_usize(rest.trim(), "frame count")?,
+        });
+    }
+    if trimmed == "locals" {
+        return Ok(Command::Locals { frame_index: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("locals ") {
+        return Ok(Command::Locals {
+            frame_index: Some(parse_usize(rest.trim(), "frame index")?),
+        });
+    }
     if trimmed == "spans" {
         return Ok(Command::Spans);
     }
@@ -2567,6 +3034,26 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
         return Ok(Command::Span {
             boundary_id: BoundaryId::from_raw(parse_u64(rest.trim(), "boundary id")?),
         });
+    }
+    if trimmed == "slist" {
+        return Ok(Command::SourceList {
+            file: None,
+            line: None,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("slist ") {
+        let (file, line) = parse_legacy_source_args(rest, "slist")?;
+        return Ok(Command::SourceList { file, line });
+    }
+    if trimmed == "view" {
+        return Ok(Command::View {
+            file: None,
+            line: None,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("view ") {
+        let (file, line) = parse_legacy_source_args(rest, "view")?;
+        return Ok(Command::View { file, line });
     }
     if let Some(rest) = trimmed.strip_prefix("source ") {
         let rest = rest.trim();
@@ -2601,6 +3088,50 @@ pub fn parse_command(input: &str) -> SwatResult<Command> {
             });
         }
         return parse_source_show(rest);
+    }
+    if trimmed == "patient-default" {
+        return Ok(Command::PatientDefault { patient: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("patient-default ") {
+        let patient = rest.trim();
+        if patient.is_empty() {
+            return Ok(Command::PatientDefault { patient: None });
+        }
+        return Ok(Command::PatientDefault {
+            patient: Some(patient.to_string()),
+        });
+    }
+    if trimmed == "spawn" {
+        return Ok(Command::Spawn {
+            patient: None,
+            function: None,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("spawn ") {
+        let (patient, function) = parse_spawn_args(rest)?;
+        return Ok(Command::Spawn { patient, function });
+    }
+    if trimmed == "wakeup" {
+        return Ok(Command::Wakeup { patient: None });
+    }
+    if let Some(rest) = trimmed.strip_prefix("wakeup ") {
+        let patient = rest.trim();
+        if patient.is_empty() {
+            return Ok(Command::Wakeup { patient: None });
+        }
+        return Ok(Command::Wakeup {
+            patient: Some(patient.to_string()),
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("obj-name ") {
+        return Ok(Command::ObjectName {
+            object: parse_entity_show(rest, "obj-name")?,
+        });
+    }
+    if let Some(rest) = trimmed.strip_prefix("obj-class ") {
+        return Ok(Command::ObjectClass {
+            object: parse_entity_show(rest, "obj-class")?,
+        });
     }
     if trimmed == "script packages" {
         return Ok(Command::ScriptPackages);
@@ -2669,6 +3200,41 @@ fn parse_stack_command(rest: &str) -> SwatResult<Command> {
     Ok(Command::Span {
         boundary_id: BoundaryId::from_raw(parse_u64(boundary, "boundary id")?),
     })
+}
+
+fn parse_legacy_source_args(
+    rest: &str,
+    label: &str,
+) -> SwatResult<(Option<String>, Option<usize>)> {
+    let mut parts = rest.split_whitespace();
+    let Some(first) = parts.next() else {
+        return Ok((None, None));
+    };
+    let second = parts.next();
+    if parts.next().is_some() {
+        return Err(SwatError::new(format!(
+            "{label} accepts at most a file and optional line number"
+        )));
+    }
+    if let Ok(line) = first.parse::<usize>() {
+        return Ok((None, Some(line)));
+    }
+    let line = second
+        .map(|value| parse_usize(value, "line number"))
+        .transpose()?;
+    Ok((Some(first.to_string()), line))
+}
+
+fn parse_spawn_args(rest: &str) -> SwatResult<(Option<String>, Option<String>)> {
+    let mut parts = rest.split_whitespace();
+    let patient = parts.next().map(ToString::to_string);
+    let function = parts.next().map(ToString::to_string);
+    if parts.next().is_some() {
+        return Err(SwatError::new(
+            "spawn accepts an optional patient and optional function",
+        ));
+    }
+    Ok((patient, function))
 }
 
 fn parse_entity_show(rest: &str, label: &str) -> SwatResult<String> {
@@ -3564,6 +4130,14 @@ fn report_paused_target(report: &swat_control::ControlledPumpReport) -> bool {
     })
 }
 
+fn escape_query_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+const LEGACY_SLIST_BEFORE: usize = 4;
+const LEGACY_SLIST_AFTER: usize = 5;
+const LEGACY_VIEW_BEFORE: usize = 10;
+const LEGACY_VIEW_AFTER: usize = 14;
 const LEGACY_TRIGGER_FILE_FORMAT_VERSION: u32 = 1;
 const PRE_GROUP_TRIGGER_FILE_FORMAT_VERSION: u32 = 2;
 const PRE_WATCHPOINT_TRIGGER_FILE_FORMAT_VERSION: u32 = 3;

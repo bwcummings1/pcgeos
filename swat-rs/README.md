@@ -107,6 +107,7 @@ The workspace now spans the required end-to-end debugger surface for `v1`:
 - `docs/adrs/0032-typed-target-entity-inspection.md`
 - `docs/adrs/0033-debugger-native-query-value-and-source-traversals.md`
 - `docs/adrs/0034-package-oriented-script-libraries.md`
+- `docs/adrs/0035-legacy-helper-command-families.md`
 
 ## Phase 1 status
 
@@ -285,8 +286,10 @@ typed `stack locals` / `stack registers` inspection, typed
 introspection, richer artifact rendering, observed `value` history traversal,
 function-oriented source traversal, source failure reporting, package-aware
 `script packages` / `script package show` / `script package load` workflows
-backed by shared `swat-script` metadata, and a runnable
-CLI shell.
+backed by shared `swat-script` metadata, legacy-style helper commands such as
+`backtrace`, `where`, `func`, `up`, `down`, `locals`, `slist`, `view`,
+`patient-default`, `spawn`, `wakeup`, `obj-name`, and `obj-class`, and a
+runnable CLI shell.
 
 The TUI crate provides a terminal dashboard over the same debugger substrate,
 with an event list, stack/entity context pane, source preview, artifact preview,

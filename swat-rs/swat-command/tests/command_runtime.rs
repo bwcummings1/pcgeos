@@ -126,12 +126,24 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("stack locals <index>"))
     );
+    assert!(
+        stack_help
+            .lines
+            .iter()
+            .any(|line| line.contains("backtrace [frames]"))
+    );
     let patient_help = command_help(Some("patient"), CommandSurface::Shell);
     assert!(
         patient_help
             .lines
             .iter()
             .any(|line| line.contains("patient show <name>"))
+    );
+    assert!(
+        patient_help
+            .lines
+            .iter()
+            .any(|line| line.contains("patient-default [name|off]"))
     );
     let value_help = command_help(Some("value"), CommandSurface::Shell);
     assert!(
@@ -153,13 +165,28 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             .iter()
             .any(|line| line.contains("package=stack"))
     );
+    let source_help = command_help(Some("source"), CommandSurface::Shell);
+    assert!(
+        source_help
+            .lines
+            .iter()
+            .any(|line| line.contains("slist [file|line] [line]"))
+    );
     let process_help = command_help(Some("process"), CommandSurface::Shell);
     assert!(process_help.summary.contains("help process"));
     assert!(
         process_help
             .lines
             .iter()
-            .any(|line| line.contains("process_event_total"))
+            .any(|line| line.contains("spawn [patient] [function]"))
+    );
+    let objwatch_help = command_help(Some("objwatch"), CommandSurface::Shell);
+    assert!(objwatch_help.summary.contains("help object"));
+    assert!(
+        objwatch_help
+            .lines
+            .iter()
+            .any(|line| line.contains("object_class_is"))
     );
     assert!(
         command_help(None, CommandSurface::Shell)
@@ -211,6 +238,29 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
         Command::Frame { frame_index: 0 }
     );
     assert_eq!(
+        parse_command("backtrace 5").unwrap(),
+        Command::Backtrace { limit: Some(5) }
+    );
+    assert_eq!(parse_command("where").unwrap(), Command::Where);
+    assert_eq!(
+        parse_command("func").unwrap(),
+        Command::Function { name: None }
+    );
+    assert_eq!(
+        parse_command("func run").unwrap(),
+        Command::Function {
+            name: Some("run".to_string()),
+        }
+    );
+    assert_eq!(parse_command("up 2").unwrap(), Command::Up { count: 2 });
+    assert_eq!(parse_command("down").unwrap(), Command::Down { count: 1 });
+    assert_eq!(
+        parse_command("locals 3").unwrap(),
+        Command::Locals {
+            frame_index: Some(3),
+        }
+    );
+    assert_eq!(
         parse_command("stack locals 0").unwrap(),
         Command::FrameLocals { frame_index: 0 }
     );
@@ -256,6 +306,51 @@ fn command_registry_exposes_family_help_and_alias_parsing() {
             line: 4,
             before: 1,
             after: 2,
+        }
+    );
+    assert_eq!(
+        parse_command("slist /tmp/agent.py 14").unwrap(),
+        Command::SourceList {
+            file: Some("/tmp/agent.py".to_string()),
+            line: Some(14),
+        }
+    );
+    assert_eq!(
+        parse_command("view /tmp/agent.py 14").unwrap(),
+        Command::View {
+            file: Some("/tmp/agent.py".to_string()),
+            line: Some(14),
+        }
+    );
+    assert_eq!(
+        parse_command("patient-default ui").unwrap(),
+        Command::PatientDefault {
+            patient: Some("ui".to_string()),
+        }
+    );
+    assert_eq!(
+        parse_command("spawn ui run").unwrap(),
+        Command::Spawn {
+            patient: Some("ui".to_string()),
+            function: Some("run".to_string()),
+        }
+    );
+    assert_eq!(
+        parse_command("wakeup ui").unwrap(),
+        Command::Wakeup {
+            patient: Some("ui".to_string()),
+        }
+    );
+    assert_eq!(
+        parse_command("obj-name ^lui:0002").unwrap(),
+        Command::ObjectName {
+            object: "^lui:0002".to_string(),
+        }
+    );
+    assert_eq!(
+        parse_command("obj-class ^lui:0002").unwrap(),
+        Command::ObjectClass {
+            object: "^lui:0002".to_string(),
         }
     );
     assert_eq!(
@@ -932,7 +1027,53 @@ fn command_host_can_view_source_file_directly() {
     );
     assert!(viewed.lines.iter().any(|line| line.contains("def beta")));
 
+    let legacy_view = host.execute(&format!("view {} 4", path.display())).unwrap();
+    assert!(
+        legacy_view
+            .summary
+            .contains(&format!("source {}:4", path.display()))
+    );
+    assert!(
+        legacy_view
+            .lines
+            .iter()
+            .any(|line| line.contains("def beta"))
+    );
+
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn command_host_can_run_legacy_spawn_and_wakeup_helpers() {
+    let code = r#"
+import json
+import sys
+import time
+
+PREFIX = "__SWATAGENT__"
+
+def emit(record):
+    sys.stdout.write(PREFIX + json.dumps(record) + "\n")
+    sys.stdout.flush()
+
+time.sleep(0.1)
+emit({"kind": "tool", "phase": "start", "name": "loader", "summary": "patient started", "file": "/tmp/agent.py", "line": 8, "function": "run", "patient": {"name": "ui"}})
+time.sleep(0.1)
+emit({"kind": "tool", "phase": "end", "name": "loader", "summary": "patient resumed", "file": "/tmp/agent.py", "line": 10, "function": "run", "patient": {"name": "ui"}})
+time.sleep(0.1)
+"#;
+    let adapter =
+        AgentRuntimeAdapter::new(AgentRuntimeSpec::new("python3").with_args(["-u", "-c", code]));
+    let mut host = CommandHost::new(Box::new(adapter), Box::new(InMemoryStore::new()));
+
+    host.execute("attach").unwrap();
+
+    let spawn = host.execute("spawn ui run").unwrap();
+    assert!(spawn.summary.contains("spawn ui until matched"));
+
+    host.execute("patient-default ui").unwrap();
+    let wakeup = host.execute("wakeup").unwrap();
+    assert!(wakeup.summary.contains("wakeup ui until matched"));
 }
 
 #[test]
@@ -1001,6 +1142,20 @@ time.sleep(0.1)
     assert!(spans.lines[1].contains("frame=1"));
     assert!(spans.lines[1].contains("label=gpt-4.1-mini"));
 
+    let backtrace = host.execute("backtrace 1").unwrap();
+    assert_eq!(backtrace.lines.len(), 1);
+    assert!(backtrace.lines[0].starts_with("* "));
+
+    let func = host.execute("func").unwrap();
+    assert!(func.summary.contains("func web_search"));
+
+    let up = host.execute("up 1").unwrap();
+    assert!(up.summary.contains("stack frame 1"));
+    let current_func = host.execute("func").unwrap();
+    assert!(current_func.summary.contains("gpt-4.1-mini"));
+    let down = host.execute("down").unwrap();
+    assert!(down.summary.contains("stack frame 0"));
+
     let frame = host.execute("stack frame 0").unwrap();
     assert!(frame.summary.contains("stack frame 0"));
     assert!(frame.lines.iter().any(|line| line.contains("depth=1")));
@@ -1018,10 +1173,35 @@ time.sleep(0.1)
     assert!(locals.lines.iter().any(|line| line.contains("local=query")));
     assert!(locals.lines.iter().any(|line| line.contains("local=limit")));
 
+    let legacy_locals = host.execute("locals").unwrap();
+    assert!(
+        legacy_locals
+            .lines
+            .iter()
+            .any(|line| line.contains("local=query"))
+    );
+
+    let where_output = host.execute("where").unwrap();
+    assert!(
+        where_output
+            .lines
+            .iter()
+            .any(|line| line.contains("source:"))
+    );
+
+    let slist = host.execute("slist").unwrap();
+    assert!(
+        slist.summary.contains("source unresolved")
+            || slist.summary.contains("source /tmp/agent.py")
+    );
+
     let patients = host.execute("patient").unwrap();
     assert_eq!(patients.lines.len(), 1);
     assert!(patients.lines[0].contains("patient=ui"));
     assert!(patients.lines[0].contains("resources=1"));
+
+    let patient_default = host.execute("patient-default ui").unwrap();
+    assert!(patient_default.summary.contains("patient-default ui"));
 
     let patient = host.execute("patient show ui").unwrap();
     assert!(
@@ -1079,6 +1259,15 @@ time.sleep(0.1)
             .iter()
             .any(|line| line.contains("class=GenApplication"))
     );
+    let object_name = host.execute("obj-name ^lui:0002").unwrap();
+    assert!(
+        object_name
+            .lines
+            .iter()
+            .any(|line| line.contains("GenApplication"))
+    );
+    let object_class = host.execute("obj-class ^lui:0002").unwrap();
+    assert_eq!(object_class.lines, vec!["class=GenApplication".to_string()]);
 
     let values = host.execute("value").unwrap();
     assert!(

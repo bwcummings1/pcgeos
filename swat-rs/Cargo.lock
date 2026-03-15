@@ -988,6 +988,7 @@ dependencies = [
  "swat-core",
  "swat-expr",
  "swat-session",
+ "swat-source",
  "swat-store",
  "swat-value",
 ]
