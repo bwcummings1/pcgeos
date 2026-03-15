@@ -3,8 +3,8 @@
 Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 
 - Queue: `T-001..T-021`
-- Progress: `5/21 done`
-- Pending: `16`
+- Progress: `6/21 done`
+- Pending: `15`
 - Blocked: `0`
 
 ## Task Snapshot
@@ -16,7 +16,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-003 | done | M1 | swat-rs-full-completion-plan | 3834ac16 |
 | T-004 | done | M1 | swat-rs-full-completion-plan | 780f01cf |
 | T-005 | done | M1 | swat-rs-full-completion-plan | 0fef11b3 |
-| T-006 | pending | M1 | - | - |
+| T-006 | done | M1 | swat-rs-full-completion-plan | 45131efa |
 | T-007 | pending | M1 | - | - |
 | T-008 | pending | M2 | - | - |
 | T-009 | pending | M2 | - | - |
@@ -42,7 +42,7 @@ Generated from `PROJECT_COMPLETION_PLAN.md`. That plan remains canonical.
 | T-003 | Add richer source listing and navigation workflows, including file-oriented discovery beyond event-scoped source lookup. | `swat-api` now catalogs source files and direct file views, and both shell and TUI expose `source files` / `source view` workflows. |
 | T-004 | Deepen the `breakpoint` family into grouped views, richer metadata, and debugger-oriented inspection output. | `swat-api` now projects shared breakpoint summaries/details/groups; `breakpoint list/show/groups` use that model while raw `triggers` stays compatible. |
 | T-005 | Add shared help/completion/history/discovery metadata across shell and TUI. | Shared registry search/completion now drives shell `rustyline` completion/history, TUI command-mode tab/history, and `help search <needle>` discovery. |
-| T-006 | Add script/runtime wrappers for the first debugger command families on top of `swat-api`. | Preserve the public-API boundary. |
+| T-006 | Add script/runtime wrappers for the first debugger command families on top of `swat-api`. | `swat-script` now wraps stack/source/breakpoint workflows through `swat-api` for both frozen script contexts and live script sessions, without shell-only shortcuts. |
 | T-007 | Reconcile Milestone 1 docs, demos, and validation evidence until the milestone exit criteria are materially satisfied. | Close M1 before moving to advanced breakpoint semantics. |
 | T-008 | Add grouped breakpoint definitions, reusable predicates, and richer stop-reason modeling. | Replace the current trigger-backed feel with a debugger-grade break model. |
 | T-009 | Add watchpoints for values, objects, resources, and lifecycle-aware load/time break conditions. | Use the legacy breakpoint Tcl/C stack as reference, not as implementation. |
